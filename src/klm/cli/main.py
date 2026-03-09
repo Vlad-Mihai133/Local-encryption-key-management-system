@@ -1,38 +1,29 @@
 from __future__ import annotations
 
 import argparse
+import uuid
+
+from klm.db.session import create_db_engine, create_session_factory
+from klm.services.crypto_service import CryptoService
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """CLI placeholder (Sprint 1).
-
-    Next sprint expectations:
-    - Add subcommands:
-      - keygen (AES/RSA)
-      - encrypt (file -> encrypted artifact)
-      - decrypt (encrypted artifact -> decrypted)
-      - list-keys / list-files / list-operations
-
-    - Wire up DB session:
-      - Read DATABASE_URL from env
-      - Open SQLAlchemy Session
-
-    - Wire up service layer:
-      - Instantiate CryptoService
-      - Call service methods
-
-    - Decide output format:
-      - human-readable text vs JSON
-    """
-
     parser = argparse.ArgumentParser(prog="klm", description="Local key management system")
     sub = parser.add_subparsers(dest="command", required=True)
 
     keygen = sub.add_parser("keygen", help="Generate a key and store it encrypted in DB")
     keygen.add_argument("--name", required=True)
     keygen.add_argument("--algorithm", required=True, help="e.g. AES, RSA")
-    keygen.add_argument("--key-type", required=True, help="symmetric | asymmetric_private | asymmetric_public")
-    keygen.add_argument("--usage", required=True, help="file_encryption | key_wrapping | signing")
+    keygen.add_argument(
+        "--key-type",
+        required=True,
+        help="symmetric | asymmetric_private | asymmetric_public",
+    )
+    keygen.add_argument(
+        "--usage",
+        required=True,
+        help="file_encryption | key_wrapping | signing",
+    )
 
     enc = sub.add_parser("encrypt", help="Encrypt a file")
     enc.add_argument("--file", required=True)
@@ -50,12 +41,63 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    # TODO (next sprint):
-    # - Create engine/session from DATABASE_URL
-    # - Instantiate CryptoService
-    # - Dispatch based on args.command
+    engine = create_db_engine()
+    session_factory = create_session_factory(engine)
 
-    raise NotImplementedError(f"Command '{args.command}' is not implemented yet")
+    with session_factory() as session:
+        service = CryptoService(session=session)
+
+        try:
+            if args.command == "keygen":
+                key_id = service.keygen(
+                    algorithm=args.algorithm,
+                    key_type=args.key_type,
+                    usage=args.usage,
+                    name=args.name,
+                    params={},
+                )
+                session.commit()
+                print(f"Key created: {key_id}")
+                return 0
+
+            if args.command == "encrypt":
+                artifact_id = service.encrypt_file(
+                    file_path=args.file,
+                    key_id=uuid.UUID(args.key_id),
+                    algorithm_variant=args.variant,
+                    params={},
+                )
+                session.commit()
+                print(f"Encrypted artifact created: {artifact_id}")
+                return 0
+
+            if args.command == "decrypt":
+                artifact_id = service.decrypt_file(
+                    artifact_id=uuid.UUID(args.artifact_id),
+                    key_id=uuid.UUID(args.key_id),
+                    params={},
+                )
+                session.commit()
+                print(f"Decrypted artifact created: {artifact_id}")
+                return 0
+
+            parser.error(f"Unknown command: {args.command}")
+            return 2
+
+        except ValueError as exc:
+            session.rollback()
+            print(f"Invalid input: {exc}")
+            return 2
+
+        except NotImplementedError as exc:
+            session.rollback()
+            print(f"Not implemented yet: {exc}")
+            return 1
+
+        except Exception as exc:
+            session.rollback()
+            print(f"Error: {exc}")
+            return 1
 
 
 if __name__ == "__main__":

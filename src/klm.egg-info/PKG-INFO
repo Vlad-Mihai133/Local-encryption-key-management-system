@@ -1,0 +1,5 @@
+Metadata-Version: 2.4
+Name: klm
+Version: 0.1.0
+Summary: Local key management system (DB entities + placeholders)
+Requires-Python: >=3.11
