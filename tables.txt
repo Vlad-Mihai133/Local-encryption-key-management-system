@@ -1,0 +1,77 @@
+Tables:
+	Keys
+		- id
+		- name
+		- type
+		- algorithm_id
+		- status
+		- created_at
+		- expires_at
+		- usage
+	KeyTypes (symmetric, asymmetric_private, asymmetric_public)
+		- id
+		- name
+	KeyUsages (file_encryption, key_wrapping, signing)
+		- id
+		- name
+	Algorithms
+		- id
+		- name
+		- type
+		- params
+	AlgorithmTypes (symmetric, asymmetric)
+		- id
+		- name
+	CryptoProviders
+		- id
+		- name
+		- version
+		- runtime_info
+	Files
+		- id
+		- name
+		- original_name
+		- original_size_bytes
+		- original_hash
+		- created_at
+	FileArtifacts
+		- id
+		- file_id
+		- artifact_type
+		- path
+		- size_bytes
+		- hash
+		- created_at
+	ArtifactTypes (encrypted, decrypted)
+		- id
+		- name
+	CryptoOperations
+		- id
+		- operation_type
+		- file_id
+		- input_artifact_id
+		- output_artifact_id
+		- provider_id
+		- algorithm_variant_id
+		- key_id
+		- params
+		- started_at
+		- ended_at
+		- result_type_id
+		- error_code
+		- error_message
+	CryptoOperationTypes (encrypt, decrypt, keygen, import_key, export_key)
+		- id
+		- name
+	ResultType (enum?) (success, fail)
+		- id
+		- name
+	PerformanceMetrics
+		- id
+		- operation_id
+		- metric_type
+		- value
+		- unit
+	PerformanceMetricTypes (duration_ms, peak_rss_kb, cpu_ms, io_read_bytes, io_write_bytes)
+		- id
+		- name
