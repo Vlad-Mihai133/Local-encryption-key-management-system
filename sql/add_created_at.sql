@@ -1,0 +1,9 @@
+ALTER TABLE key_types ADD COLUMN created_at timestamptz NOT NULL DEFAULT now();
+ALTER TABLE key_usages ADD COLUMN created_at timestamptz NOT NULL DEFAULT now();
+ALTER TABLE algorithm_types ADD COLUMN created_at timestamptz NOT NULL DEFAULT now();
+ALTER TABLE artifact_types ADD COLUMN created_at timestamptz NOT NULL DEFAULT now();
+ALTER TABLE crypto_operation_types ADD COLUMN created_at timestamptz NOT NULL DEFAULT now();
+ALTER TABLE result_types ADD COLUMN created_at timestamptz NOT NULL DEFAULT now();
+ALTER TABLE performance_metric_types ADD COLUMN created_at timestamptz NOT NULL DEFAULT now();
+ALTER TABLE algorithms ADD COLUMN created_at timestamptz NOT NULL DEFAULT now();
+ALTER TABLE crypto_providers ADD COLUMN created_at timestamptz NOT NULL DEFAULT now();

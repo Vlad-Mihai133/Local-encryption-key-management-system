@@ -9,37 +9,44 @@ CREATE EXTENSION IF NOT EXISTS pgcrypto;
 -- Lookup tables
 CREATE TABLE IF NOT EXISTS key_types (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    name text NOT NULL UNIQUE
+    name text NOT NULL UNIQUE,
+    created_at timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS key_usages (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    name text NOT NULL UNIQUE
+    name text NOT NULL UNIQUE,
+    created_at timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS algorithm_types (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    name text NOT NULL UNIQUE
+    name text NOT NULL UNIQUE,
+    created_at timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS artifact_types (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    name text NOT NULL UNIQUE
+    name text NOT NULL UNIQUE,
+    created_at timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS crypto_operation_types (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    name text NOT NULL UNIQUE
+    name text NOT NULL UNIQUE,
+    created_at timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS result_types (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    name text NOT NULL UNIQUE
+    name text NOT NULL UNIQUE,
+    created_at timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS performance_metric_types (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-    name text NOT NULL UNIQUE
+    name text NOT NULL UNIQUE,
+    created_at timestamptz NOT NULL DEFAULT now()
 );
 
 -- Core tables
@@ -47,7 +54,8 @@ CREATE TABLE IF NOT EXISTS algorithms (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     name text NOT NULL UNIQUE,
     type_id uuid NOT NULL REFERENCES algorithm_types(id) ON DELETE RESTRICT,
-    params jsonb NOT NULL DEFAULT '{}'::jsonb
+    params jsonb NOT NULL DEFAULT '{}'::jsonb,
+    created_at timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE TABLE IF NOT EXISTS crypto_providers (
@@ -55,6 +63,7 @@ CREATE TABLE IF NOT EXISTS crypto_providers (
     name text NOT NULL,
     version text NULL,
     runtime_info jsonb NOT NULL DEFAULT '{}'::jsonb,
+    created_at timestamptz NOT NULL DEFAULT now(),
     UNIQUE (name, version)
 );
 

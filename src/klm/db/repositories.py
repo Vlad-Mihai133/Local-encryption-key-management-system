@@ -24,6 +24,108 @@ class Repository(Generic[T]):
     """
 
     session: Session
+'''repos pt fiecare model, incluzand modelele lookup'''
+#pt entitatile cu date fixe, avem doar get_by_id, get_by_name, list_all
+
+@dataclass(frozen=True)
+class KeyTypeRepository(Repository[models.KeyType]):
+    def get(self, key_type_id: int) -> models.KeyType | None:
+        return self.session.get(models.KeyType, key_type_id)
+
+    def get_by_name(self, name: str) -> models.KeyType | None:
+        stmt = select(models.KeyType).where(models.KeyType.name == name)
+        return self.session.scalar(stmt)
+
+    def list_all(self) -> list[models.KeyType]:
+        stmt = select(models.KeyType).order_by(models.KeyType.created_at.desc())
+        return list(self.session.scalars(stmt))
+
+    def delete(self, obj):
+        """Doar pentru uz intern sau teste! Nu folosi in productie."""
+        import os
+        if not os.getenv("ALLOW_DELETE", False):
+            raise PermissionError("Delete nu este permis in productie!")
+        self.session.delete(obj)
+        self.session.commit()
+    
+@dataclass(frozen=True)
+class KeyUsageRepository(Repository[models.KeyUsage]):
+    def get(self, usage_id: int) -> models.KeyUsage | None:
+        return self.session.get(models.KeyUsage, usage_id)
+
+    def get_by_name(self, name: str) -> models.KeyUsage | None:
+        stmt = select(models.KeyUsage).where(models.KeyUsage.name == name)
+        return self.session.scalar(stmt)
+
+    def list_all(self) -> list[models.KeyUsage]:
+        stmt = select(models.KeyUsage).order_by(models.KeyUsage.created_at.desc())
+        return list(self.session.scalars(stmt))
+
+@dataclass(frozen=True)
+class AlgorithmTypeRepository(Repository[models.Algorithm]):
+    def get(self, algorithm_id: int) -> models.Algorithm | None:
+        return self.session.get(models.Algorithm, algorithm_id)
+
+    def get_by_name(self, name: str) -> models.Algorithm | None:
+        stmt = select(models.Algorithm).where(models.Algorithm.name == name)
+        return self.session.scalar(stmt)
+
+    def list_all(self) -> list[models.Algorithm]:
+        stmt = select(models.Algorithm).order_by(models.Algorithm.created_at.desc())
+        return list(self.session.scalars(stmt))
+    
+@dataclass(frozen=True)
+class ArtifactTypeRepository(Repository[models.ArtifactType]):
+    def get(self, artifact_type_id: int) -> models.ArtifactType | None:
+        return self.session.get(models.ArtifactType, artifact_type_id)
+
+    def get_by_name(self, name: str) -> models.ArtifactType | None:
+        stmt = select(models.ArtifactType).where(models.ArtifactType.name == name)
+        return self.session.scalar(stmt)
+
+    def list_all(self) -> list[models.ArtifactType]:
+        stmt = select(models.ArtifactType).order_by(models.ArtifactType.created_at.desc())
+        return list(self.session.scalars(stmt))
+    
+@dataclass(frozen=True)
+class CryptoOperationTypeRepository(Repository[models.CryptoOperationType]):
+    def get(self, operation_type_id: int) -> models.CryptoOperationType | None:
+        return self.session.get(models.CryptoOperationType, operation_type_id)
+
+    def get_by_name(self, name: str) -> models.CryptoOperationType | None:
+        stmt = select(models.CryptoOperationType).where(models.CryptoOperationType.name == name)
+        return self.session.scalar(stmt)
+
+    def list_all(self) -> list[models.CryptoOperationType]:
+        stmt = select(models.CryptoOperationType).order_by(models.CryptoOperationType.created_at.desc())
+        return list(self.session.scalars(stmt))
+
+@dataclass(frozen=True)
+class ResultTypeRepository(Repository[models.ResultType]):
+    def get(self, result_type_id: int) -> models.ResultType | None:
+        return self.session.get(models.ResultType, result_type_id)
+
+    def get_by_name(self, name: str) -> models.ResultType | None:
+        stmt = select(models.ResultType).where(models.ResultType.name == name)
+        return self.session.scalar(stmt)
+
+    def list_all(self) -> list[models.ResultType]:
+        stmt = select(models.ResultType).order_by(models.ResultType.created_at.desc())
+        return list(self.session.scalars(stmt))
+
+@dataclass(frozen=True)
+class PerformanceMetricTypeRepository(Repository[models.PerformanceMetricType]):
+    def get(self, metric_type_id: int) -> models.PerformanceMetricType | None:
+        return self.session.get(models.PerformanceMetricType, metric_type_id)
+
+    def get_by_name(self, name: str) -> models.PerformanceMetricType | None:
+        stmt = select(models.PerformanceMetricType).where(models.PerformanceMetricType.name == name)
+        return self.session.scalar(stmt)
+
+    def list_all(self) -> list[models.PerformanceMetricType]:
+        stmt = select(models.PerformanceMetricType).order_by(models.PerformanceMetricType.created_at.desc())
+        return list(self.session.scalars(stmt))
+    
 
 
 @dataclass(frozen=True)
@@ -45,20 +147,21 @@ class KeyRepository(Repository[models.Key]):
     def exists_by_name(self, name: str) -> bool:
         return self.get_by_name(name) is not None
     #pentru AES vs RSA
-    def list_by_algorithm(self, algorithm_id: int) -> list[models.Key]:
-        stmt = select(models.Key).where(models.Key.algorithm_id == algorithm_id)
+    def list_by_algorithm_variant(self, algorithm_variant_id: uuid.UUID) -> list[models.Key]:
+        stmt = select(models.Key).where(models.Key.algorithm_id == algorithm_variant_id)
         return list(self.session.scalars(stmt))
     #pentru file_encryption, signing
     def list_by_usage(self, usage_id: int) -> list[models.Key]:
         stmt = select(models.Key).where(models.Key.usage_id == usage_id)
         return list(self.session.scalars(stmt))
+    
     #CRUD minim
     def delete(self, key: models.Key) -> None:
         self.session.delete(key)
 
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True)#
 class FileRepository(Repository[models.File]):
     def get(self, file_id: uuid.UUID) -> models.File | None:
         return self.session.get(models.File, file_id)
@@ -73,14 +176,7 @@ class FileRepository(Repository[models.File]):
     def get_by_path(self, path: str) -> models.File | None:
         stmt = select(models.File).where(models.File.path == path)
         return self.session.scalar(stmt)
-    #validare
-    def get_by_sha256(self, sha256: str) -> models.File | None:
-        stmt = select(models.File).where(models.File.sha256 == sha256)
-        return self.session.scalar(stmt)
-
-    def exists_by_sha256(self, sha256: str) -> bool:
-        return self.get_by_sha256(sha256) is not None
-
+    #sterg file
     def delete(self, file: models.File) -> None:
         self.session.delete(file)
 
@@ -143,17 +239,13 @@ class PerformanceMetricRepository(Repository[models.PerformanceMetric]):
     def delete(self, metric: models.PerformanceMetric) -> None:
         self.session.delete(metric)
 
-#aici avem lookup repositories ptc avem tabele cu date fixe: id     name
-#                                                             1     AES
-#                                                             2     RSA , iar CLI primeste cv de genul
-'''--algorithm AES
---key-type symmetric
---usage file_encryption , dar avem nevoie de
- algorithm_id = 1
-key_type_id = 1
-usage_id = 1'''
+
 @dataclass(frozen=True)
 class AlgorithmRepository(Repository[models.Algorithm]):
+    def add(self, algorithm: models.Algorithm) -> None:
+        self.session.add(algorithm) 
+    def update(self, algorithm: models.Algorithm) -> None:
+        self.session.merge(algorithm)
     def get(self, algorithm_id: int) -> models.Algorithm | None:
         return self.session.get(models.Algorithm, algorithm_id)
 
@@ -162,40 +254,21 @@ class AlgorithmRepository(Repository[models.Algorithm]):
         return self.session.scalar(stmt)
 
     def list_all(self) -> list[models.Algorithm]:
-        stmt = select(models.Algorithm)
+        stmt = select(models.Algorithm).order_by(models.Algorithm.created_at.desc())
         return list(self.session.scalars(stmt))
-
-
-@dataclass(frozen=True)
-class KeyTypeRepository(Repository[models.KeyType]):
-    def get(self, key_type_id: int) -> models.KeyType | None:
-        return self.session.get(models.KeyType, key_type_id)
-
-    def get_by_name(self, name: str) -> models.KeyType | None:
-        stmt = select(models.KeyType).where(models.KeyType.name == name)
-        return self.session.scalar(stmt)
-
-    def list_all(self) -> list[models.KeyType]:
-        stmt = select(models.KeyType)
-        return list(self.session.scalars(stmt))
-
-
-@dataclass(frozen=True)
-class KeyUsageRepository(Repository[models.KeyUsage]):
-    def get(self, usage_id: int) -> models.KeyUsage | None:
-        return self.session.get(models.KeyUsage, usage_id)
-
-    def get_by_name(self, name: str) -> models.KeyUsage | None:
-        stmt = select(models.KeyUsage).where(models.KeyUsage.name == name)
-        return self.session.scalar(stmt)
-
-    def list_all(self) -> list[models.KeyUsage]:
-        stmt = select(models.KeyUsage)
-        return list(self.session.scalars(stmt))
-
+    def update_algorithm(self, key: models.Key, new_algorithm_id) -> None:
+        algorithm = self.session.get(models.Algorithm, new_algorithm_id)
+        if not algorithm or algorithm.name.lower() not in ("aes", "rsa"):
+            raise ValueError("algorithm_id trebuie sa fie pentru un algoritm cu numele 'AES' sau 'RSA' (case-insensitive).")
+        key.algorithm_id = new_algorithm_id
+        self.session.commit()
+    def delete(self, algorithm: models.Algorithm) -> None:
+        self.session.delete(algorithm)
 
 @dataclass(frozen=True)
 class CryptoProviderRepository(Repository[models.CryptoProvider]):
+    def add(self, provider: models.CryptoProvider) -> None:
+        self.session.add(provider)
     def get(self, provider_id: int) -> models.CryptoProvider | None:
         return self.session.get(models.CryptoProvider, provider_id)
 
@@ -204,5 +277,54 @@ class CryptoProviderRepository(Repository[models.CryptoProvider]):
         return self.session.scalar(stmt)
 
     def list_all(self) -> list[models.CryptoProvider]:
-        stmt = select(models.CryptoProvider)
+        stmt = select(models.CryptoProvider).order_by(models.CryptoProvider.created_at.desc())
         return list(self.session.scalars(stmt))
+    def update(self, provider: models.CryptoProvider) -> None:
+        self.session.merge(provider)
+    def delete(self, provider: models.CryptoProvider) -> None:
+        self.session.delete(provider)   
+    
+
+@dataclass(frozen=True)
+class FileArtifactRepository(Repository[models.FileArtifact]):
+
+    def get(self, artifact_id: uuid.UUID) -> models.FileArtifact | None:
+        return self.session.get(models.FileArtifact, artifact_id)
+
+    def add(self, artifact: models.FileArtifact) -> None:
+        self.session.add(artifact)
+    
+    def update(self, artifact: models.FileArtifact) -> None:
+        self.session.merge(artifact)
+    def update_path(self, artifact: models.FileArtifact, new_path: str) -> None:
+        artifact.path = new_path
+        self.session.commit()
+
+    def list_all(self) -> list[models.FileArtifact]:
+        stmt = select(models.FileArtifact)
+        return list(self.session.scalars(stmt))
+
+    def delete(self, artifact: models.FileArtifact) -> None:
+        self.session.delete(artifact)
+
+@dataclass(frozen=True)
+class AlgorithmVariantRepository(Repository[models.AlgorithmVariant]):
+    def add(self, variant: models.AlgorithmVariant) -> None:
+        self.session.add(variant)
+    def update(self, variant: models.AlgorithmVariant) -> None:
+        self.session.merge(variant)
+    def get(self, variant_id: uuid.UUID) -> models.AlgorithmVariant | None:
+        return self.session.get(models.AlgorithmVariant, variant_id)
+
+    def get_by_name(self, name: str, algorithm_id: uuid.UUID) -> models.AlgorithmVariant | None:
+        stmt = select(models.AlgorithmVariant).where(
+            models.AlgorithmVariant.name == name,
+            models.AlgorithmVariant.algorithm_id == algorithm_id
+        )
+        return self.session.scalar(stmt)
+
+    def list_all(self) -> list[models.AlgorithmVariant]:
+        stmt = select(models.AlgorithmVariant).order_by(models.AlgorithmVariant.created_at.desc())
+        return list(self.session.scalars(stmt))
+    def delete(self, variant: models.AlgorithmVariant) -> None:
+        self.session.delete(variant)

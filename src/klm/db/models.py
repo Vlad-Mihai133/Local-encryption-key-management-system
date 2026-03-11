@@ -20,6 +20,7 @@ class KeyType(Base):
         UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
     )
     name: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
 
 
 class KeyUsage(Base):
@@ -29,6 +30,7 @@ class KeyUsage(Base):
         UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
     )
     name: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
 
 
 class AlgorithmType(Base):
@@ -38,6 +40,7 @@ class AlgorithmType(Base):
         UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
     )
     name: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
 
 
 class ArtifactType(Base):
@@ -47,6 +50,7 @@ class ArtifactType(Base):
         UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
     )
     name: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
 
 
 class CryptoOperationType(Base):
@@ -56,6 +60,7 @@ class CryptoOperationType(Base):
         UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
     )
     name: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
 
 
 class ResultType(Base):
@@ -65,6 +70,7 @@ class ResultType(Base):
         UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
     )
     name: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
 
 
 class PerformanceMetricType(Base):
@@ -74,6 +80,7 @@ class PerformanceMetricType(Base):
         UUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()")
     )
     name: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
 
 
 class Algorithm(Base):
@@ -93,6 +100,7 @@ class Algorithm(Base):
     )
 
     type: Mapped[AlgorithmType] = relationship("AlgorithmType")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
 
 
 class CryptoProvider(Base):
@@ -107,6 +115,7 @@ class CryptoProvider(Base):
     runtime_info: Mapped[dict[str, Any]] = mapped_column(
         JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
     )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=text("now()"))
 
 
 class AlgorithmVariant(Base):
@@ -146,7 +155,7 @@ class Key(Base):
     )
     algorithm_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("algorithms.id", ondelete="RESTRICT"),
+        ForeignKey("algorithm_variants.id", ondelete="RESTRICT"),
         nullable=False,
     )
     status: Mapped[str] = mapped_column(
@@ -175,7 +184,7 @@ class Key(Base):
 
     type: Mapped[KeyType] = relationship("KeyType")
     usage: Mapped[KeyUsage] = relationship("KeyUsage")
-    algorithm: Mapped[Algorithm] = relationship("Algorithm")
+    algorithm: Mapped[AlgorithmVariant] = relationship("AlgorithmVariant")
 
 
 class File(Base):
