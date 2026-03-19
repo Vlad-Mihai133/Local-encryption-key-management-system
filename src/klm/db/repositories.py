@@ -40,13 +40,6 @@ class KeyTypeRepository(Repository[models.KeyType]):
         stmt = select(models.KeyType).order_by(models.KeyType.created_at.desc())
         return list(self.session.scalars(stmt))
 
-    def delete(self, obj):
-        """Doar pentru uz intern sau teste! Nu folosi in productie."""
-        import os
-        if not os.getenv("ALLOW_DELETE", False):
-            raise PermissionError("Delete nu este permis in productie!")
-        self.session.delete(obj)
-        self.session.commit()
     
 @dataclass(frozen=True)
 class KeyUsageRepository(Repository[models.KeyUsage]):
@@ -62,16 +55,16 @@ class KeyUsageRepository(Repository[models.KeyUsage]):
         return list(self.session.scalars(stmt))
 
 @dataclass(frozen=True)
-class AlgorithmTypeRepository(Repository[models.Algorithm]):
-    def get(self, algorithm_id: int) -> models.Algorithm | None:
-        return self.session.get(models.Algorithm, algorithm_id)
+class AlgorithmTypeRepository(Repository[models.AlgorithmType]):
+    def get(self, algorithm_type_id: uuid.UUID) -> models.AlgorithmType | None:
+        return self.session.get(models.AlgorithmType, algorithm_type_id)
 
-    def get_by_name(self, name: str) -> models.Algorithm | None:
-        stmt = select(models.Algorithm).where(models.Algorithm.name == name)
+    def get_by_name(self, name: str) -> models.AlgorithmType | None:
+        stmt = select(models.AlgorithmType).where(models.AlgorithmType.name == name)
         return self.session.scalar(stmt)
 
-    def list_all(self) -> list[models.Algorithm]:
-        stmt = select(models.Algorithm).order_by(models.Algorithm.created_at.desc())
+    def list_all(self) -> list[models.AlgorithmType]:
+        stmt = select(models.AlgorithmType).order_by(models.AlgorithmType.created_at.desc())
         return list(self.session.scalars(stmt))
     
 @dataclass(frozen=True)

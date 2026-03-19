@@ -40,7 +40,4 @@ def test_keytype_crud(session):
     session.commit()
     found2 = repo.get(kt.id)
     assert found2.name == "symmetric-updated"
-    # Delete
-    repo.delete(found2)
-    session.commit()
-    assert repo.get(kt.id) is None
+
