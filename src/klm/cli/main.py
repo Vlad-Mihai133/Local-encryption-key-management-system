@@ -9,7 +9,7 @@ from klm.services.crypto_service import CryptoService
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="klm", description="Local key management system")
-    sub = parser.add_subparsers(dest="command", required=True)
+    sub = parser.add_subparsers(dest="command")
 
     artifact_add = sub.add_parser("artifact-add", help="Add new artifact")
     artifact_add.add_argument("--file-id", required=True)
@@ -60,6 +60,10 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    if not getattr(args, "command", None):
+        parser.print_help()
+        return 0
 
     engine = create_db_engine()
     session_factory = create_session_factory(engine)

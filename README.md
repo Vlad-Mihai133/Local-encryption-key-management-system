@@ -56,6 +56,13 @@ $env:PYTHONPATH = "src"
 python -m klm --help
 ```
 
+Note: `python -m klm` (fara argumente) porneste UI-ul Tkinter; pentru CLI foloseste `--help` sau ruleaza direct:
+
+```powershell
+$env:PYTHONPATH = "src"
+python -m klm.cli --help
+```
+
 ## UI grafic (desktop, Tkinter)
 
 UI-ul este o fereastra simpla pentru:
@@ -67,7 +74,7 @@ Rulare:
 
 ```powershell
 $env:PYTHONPATH = "src"
-python -m klm.ui
+python -m klm
 ```
 
 Necesita `DATABASE_URL` setat in `.env` (la fel ca pentru CLI).

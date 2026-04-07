@@ -8,9 +8,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import tkinter as tk
+from tkinter import messagebox
 from tkinter import filedialog, ttk
 
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError, SQLAlchemyError
 
 from klm.db import models
 from klm.db.session import create_db_engine, create_session_factory
@@ -444,5 +446,52 @@ class _ImportKeyDialog(tk.Toplevel):
 
 
 def run() -> None:
-    app = KLMApp()
+    try:
+        app = KLMApp()
+    except RuntimeError as exc:
+        # Most common: DATABASE_URL missing.
+        root = tk.Tk()
+        root.withdraw()
+        msg = str(exc)
+        if msg == "DATABASE_URL is not set":
+            msg = (
+                "DATABASE_URL nu este setat.\n\n"
+                "1) Copiaza .env.example -> .env\n"
+                "2) Seteaza DATABASE_URL in .env (ex: postgresql+psycopg://user:pass@localhost:5432/klm)\n\n"
+                "Apoi ruleaza din nou: python -m klm"
+            )
+        messagebox.showerror("KLM - configurare DB", msg)
+        root.destroy()
+        return
+
+    except OperationalError as exc:
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showerror(
+            "KLM - conexiune DB",
+            (
+                "Nu ma pot conecta la baza de date (OperationalError).\n\n"
+                "Cauze frecvente:\n"
+                "- user/parola gresite in DATABASE_URL\n"
+                "- Postgres nu ruleaza / port gresit\n\n"
+                "Verifica DATABASE_URL din .env.\n\n"
+                f"Detalii: {exc.orig if hasattr(exc, 'orig') else exc}"
+            ),
+        )
+        root.destroy()
+        return
+
+    except SQLAlchemyError as exc:
+        root = tk.Tk()
+        root.withdraw()
+        messagebox.showerror(
+            "KLM - eroare DB",
+            (
+                "A aparut o eroare SQLAlchemy la initializarea UI-ului.\n\n"
+                "Detalii: " + str(exc)
+            ),
+        )
+        root.destroy()
+        return
+
     app.mainloop()
