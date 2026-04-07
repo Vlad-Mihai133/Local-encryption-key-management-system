@@ -56,6 +56,29 @@ $env:PYTHONPATH = "src"
 python -m klm --help
 ```
 
+## UI grafic (desktop, Tkinter)
+
+UI-ul este o fereastra simpla pentru:
+- selectare algoritm -> varianta
+- selectare/adaugare cheie (import de `encrypted_material` in Base64)
+- selectare/adaugare fisier (browse + inregistrare in DB)
+
+Rulare:
+
+```powershell
+$env:PYTHONPATH = "src"
+python -m klm.ui
+```
+
+Necesita `DATABASE_URL` setat in `.env` (la fel ca pentru CLI).
+
+## Schema note (keys.algorithm_id)
+
+Schema din `sql/schema.sql` a fost aliniata cu ORM-ul: `keys.algorithm_id` refera `algorithm_variants(id)`.
+
+Daca ai o baza de date veche (creata cu o schema unde `keys.algorithm_id` refera `algorithms(id)`), vezi scriptul:
+- `sql/migrate_keys_algorithm_id_to_variants.sql`
+
 ## Notes
 
 - Key material is stored in the DB (ciphertext).

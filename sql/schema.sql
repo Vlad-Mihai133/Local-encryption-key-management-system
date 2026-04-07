@@ -85,7 +85,7 @@ CREATE TABLE IF NOT EXISTS keys (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
     name text NOT NULL,
     type_id uuid NOT NULL REFERENCES key_types(id) ON DELETE RESTRICT,
-    algorithm_id uuid NOT NULL REFERENCES algorithms(id) ON DELETE RESTRICT,
+    algorithm_id uuid NOT NULL REFERENCES algorithm_variants(id) ON DELETE RESTRICT,
     status text NOT NULL DEFAULT 'active',
     created_at timestamptz NOT NULL DEFAULT now(),
     expires_at timestamptz NULL,
