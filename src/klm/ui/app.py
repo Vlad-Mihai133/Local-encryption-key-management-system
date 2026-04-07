@@ -16,6 +16,7 @@ from sqlalchemy.exc import OperationalError, SQLAlchemyError
 
 from klm.db import models
 from klm.db.session import create_db_engine, create_session_factory
+from klm.services.crypto_service import CryptoService
 
 
 @dataclass(frozen=True)
@@ -112,6 +113,8 @@ class KLMApp(tk.Tk):
         ttk.Button(buttons, text="Refresh", command=self.refresh).pack(side=tk.LEFT)
         ttk.Button(buttons, text="Adauga fisier...", command=self.add_file).pack(side=tk.LEFT, padx=8)
         ttk.Button(buttons, text="Import cheie...", command=self.import_key).pack(side=tk.LEFT)
+        ttk.Button(buttons, text="Encrypt", command=self.encrypt_selected).pack(side=tk.LEFT, padx=8)
+        ttk.Button(buttons, text="Decrypt", command=self.decrypt_selected).pack(side=tk.LEFT)
 
         self.status = ttk.Label(root, text="")
         self.status.pack(fill=tk.X, pady=(8, 0))
@@ -147,6 +150,102 @@ class KLMApp(tk.Tk):
         self._update_file_cb()
         self._render_details()
         self._set_status("Incarcat din DB.")
+
+    def _get_file_artifact_by_type(self, *, file_id: uuid.UUID, artifact_type_name: str) -> models.FileArtifact | None:
+        with self.Session() as session:
+            artifact_type = session.scalar(
+                select(models.ArtifactType).where(models.ArtifactType.name == artifact_type_name)
+            )
+            if not artifact_type:
+                return None
+            stmt = (
+                select(models.FileArtifact)
+                .where(
+                    models.FileArtifact.file_id == file_id,
+                    models.FileArtifact.artifact_type_id == artifact_type.id,
+                )
+                .order_by(models.FileArtifact.created_at.desc())
+            )
+            return session.scalar(stmt)
+
+    def encrypt_selected(self) -> None:
+        if not self.selected_file:
+            messagebox.showerror("KLM", "Selecteaza un fisier.")
+            return
+        if not self.selected_variant:
+            messagebox.showerror("KLM", "Selecteaza o varianta de algoritm.")
+            return
+        if not self.selected_key:
+            messagebox.showerror("KLM", "Selecteaza o cheie.")
+            return
+
+        # input artifact (decrypted) gives us the real file path
+        input_artifact = self._get_file_artifact_by_type(file_id=self.selected_file.id, artifact_type_name="decrypted")
+        if not input_artifact:
+            messagebox.showerror(
+                "KLM",
+                "Nu exista artifact de tip 'decrypted' pentru fisierul selectat. Foloseste 'Adauga fisier...' primul.",
+            )
+            return
+
+        try:
+            with self.Session() as session:
+                service = CryptoService(session=session)
+                out_id = service.encrypt_file(
+                    file_path=input_artifact.path,
+                    key_id=self.selected_key.id,
+                    algorithm_variant=self.selected_variant.name,
+                    params={
+                        "file_id": str(self.selected_file.id),
+                        "algorithm_variant_id": str(self.selected_variant.id),
+                        "input_artifact_id": str(input_artifact.id),
+                    },
+                )
+                session.commit()
+                out_artifact = session.get(models.FileArtifact, out_id)
+
+            self.refresh()
+            self._set_status(f"Encrypt OK: {out_artifact.path if out_artifact else out_id}")
+        except NotImplementedError as exc:
+            messagebox.showinfo("KLM - encrypt", str(exc) or "Encrypt: not implemented yet.")
+        except Exception as exc:
+            messagebox.showerror("KLM - encrypt", str(exc))
+
+    def decrypt_selected(self) -> None:
+        if not self.selected_file:
+            messagebox.showerror("KLM", "Selecteaza un fisier.")
+            return
+        if not self.selected_key:
+            messagebox.showerror("KLM", "Selecteaza o cheie.")
+            return
+
+        input_artifact = self._get_file_artifact_by_type(file_id=self.selected_file.id, artifact_type_name="encrypted")
+        if not input_artifact:
+            messagebox.showerror(
+                "KLM",
+                "Nu exista artifact de tip 'encrypted' pentru fisierul selectat. Ruleaza mai intai Encrypt.",
+            )
+            return
+
+        try:
+            with self.Session() as session:
+                service = CryptoService(session=session)
+                out_id = service.decrypt_file(
+                    artifact_id=input_artifact.id,
+                    key_id=self.selected_key.id,
+                    params={
+                        **({"algorithm_variant_id": str(self.selected_variant.id)} if self.selected_variant else {}),
+                    },
+                )
+                session.commit()
+                out_artifact = session.get(models.FileArtifact, out_id)
+
+            self.refresh()
+            self._set_status(f"Decrypt OK: {out_artifact.path if out_artifact else out_id}")
+        except NotImplementedError as exc:
+            messagebox.showinfo("KLM - decrypt", str(exc) or "Decrypt: not implemented yet.")
+        except Exception as exc:
+            messagebox.showerror("KLM - decrypt", str(exc))
 
     def _update_algorithm_cb(self) -> None:
         labels = [a.name for a in self.algorithms]

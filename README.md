@@ -31,6 +31,15 @@ The schema is idempotent (safe to re-run):
 psql -d klm -f .\sql\schema.sql
 ```
 
+Nota: `schema.sql` face seed doar pentru tabelele de tip lookup (ex. key_types, key_usages, algorithm_types etc.).
+Tabelele `algorithms` si `algorithm_variants` NU sunt populate implicit, deci UI-ul va afisa liste goale pana le seed-uiesti.
+
+Seed demo (AES/RSA + cateva variante):
+
+```powershell
+psql -d klm -f .\sql\seed_demo_algorithms.sql
+```
+
 ### 3) Python environment
 
 Create a virtualenv with Python 3.11+:

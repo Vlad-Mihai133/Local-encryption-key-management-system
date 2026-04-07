@@ -6,6 +6,8 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from klm.db import models
+
 from klm.db.repositories import (
     CryptoOperationRepository,
     FileRepository,
@@ -75,7 +77,33 @@ class CryptoService:
         - Create PerformanceMetrics rows
         """
 
-        raise NotImplementedError
+        # Placeholder only (Sprint 1): UI calls into this method.
+        # Keep the signature stable; implementation will be added by a teammate.
+        #
+        # Expected params (current UI):
+        # - file_id: UUID (string)
+        # - algorithm_variant_id: UUID (string)
+        # - input_artifact_id: UUID (string)
+        missing = [k for k in ("file_id", "algorithm_variant_id", "input_artifact_id") if k not in params]
+        if missing:
+            raise ValueError(f"encrypt_file missing params: {missing}")
+
+        raise NotImplementedError(
+            "CryptoService.encrypt_file TODO.\n"
+            "Implement AES/RSA encryption and persist DB rows.\n\n"
+            "Inputs:\n"
+            f"- file_path={file_path}\n"
+            f"- key_id={key_id}\n"
+            f"- algorithm_variant={algorithm_variant}\n"
+            f"- params={params}\n\n"
+            "Expected behavior:\n"
+            "1) Load Key from DB (models.Key) and validate status/usage\n"
+            "2) Resolve AlgorithmVariant (models.AlgorithmVariant)\n"
+            "3) Encrypt file_path -> output artifact on disk\n"
+            "4) Insert FileArtifact(type=encrypted) for output\n"
+            "5) Insert CryptoOperation(type=encrypt, result=success/fail)\n"
+            "6) Return output FileArtifact.id\n"
+        )
 
     def decrypt_file(self, *, artifact_id: uuid.UUID, key_id: uuid.UUID, params: dict[str, Any]) -> uuid.UUID:
         """TODO: Decrypt an encrypted artifact.
@@ -83,4 +111,23 @@ class CryptoService:
         Expected behavior mirrors encrypt_file, writing a decrypted artifact.
         """
 
-        raise NotImplementedError
+        # Placeholder only (Sprint 1)
+        # Expected params (optional):
+        # - algorithm_variant_id: UUID (string)
+        _ = params.get("algorithm_variant_id")
+
+        raise NotImplementedError(
+            "CryptoService.decrypt_file TODO.\n"
+            "Implement decrypt and persist DB rows.\n\n"
+            "Inputs:\n"
+            f"- artifact_id={artifact_id}\n"
+            f"- key_id={key_id}\n"
+            f"- params={params}\n\n"
+            "Expected behavior:\n"
+            "1) Load input FileArtifact (models.FileArtifact)\n"
+            "2) Load Key (models.Key)\n"
+            "3) Decrypt -> output artifact on disk\n"
+            "4) Insert FileArtifact(type=decrypted) for output\n"
+            "5) Insert CryptoOperation(type=decrypt, result=success/fail)\n"
+            "6) Return output FileArtifact.id\n"
+        )
