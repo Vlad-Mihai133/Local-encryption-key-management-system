@@ -415,9 +415,18 @@ class KLMApp(tk.Tk):
                 return
 
             try:
-                material = base64.b64decode(payload.encrypted_material_b64, validate=True)
+                material_plain = base64.b64decode(payload.encrypted_material_b64, validate=True)
             except Exception:
                 self._set_status("Eroare: encrypted_material nu e Base64 valid.")
+                return
+
+            # Store key material encrypted (app-level) so CryptoService can use it.
+            from klm.services.crypto_service import _encrypt_bytes_with_master
+
+            try:
+                encrypted_material, enc_params = _encrypt_bytes_with_master(material_plain)
+            except Exception as exc:
+                self._set_status(f"Eroare: nu pot cripta materialul cheii pentru stocare: {exc}")
                 return
 
             key = models.Key(
@@ -426,10 +435,10 @@ class KLMApp(tk.Tk):
                 algorithm_id=payload.variant_id,
                 status="active",
                 usage_id=payload.usage_id,
-                encrypted_material=material,
+                encrypted_material=encrypted_material,
                 material_format="raw",
-                encryption_scheme="import",
-                encryption_params={},
+                encryption_scheme="app-level-aes-256-cbc",
+                encryption_params=enc_params,
             )
             session.add(key)
             session.commit()

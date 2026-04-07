@@ -4,13 +4,16 @@ import hashlib
 import json
 import os
 import subprocess
+import tempfile
 import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from secrets import token_bytes
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from klm.db import models
@@ -38,7 +41,10 @@ from klm.db.repositories import (
 # MUST be set in environment. 32 bytes hex-encoded = AES-256 key.
 _MASTER_KEY_ENV = "KLM_MASTER_KEY"
 _OUTPUT_DIR_ENV = "KLM_ARTIFACT_DIR"
-_DEFAULT_ARTIFACT_DIR = "/tmp/klm_artifacts"
+_DEFAULT_ARTIFACT_DIR = str(Path(tempfile.gettempdir()) / "klm_artifacts")
+
+# If KLM_MASTER_KEY is not provided, we persist a generated key here (project root).
+_MASTER_KEY_FILE_NAME = ".klm_master_key"
 
 # Provider identity
 _PROVIDER_NAME = "openssl"
@@ -76,23 +82,78 @@ def _sha256_file(path: str) -> str:
 
 
 def _get_master_key() -> bytes:
-    """Read master key from environment (hex-encoded, 32 bytes = 64 hex chars)."""
+    """Get master key bytes used to encrypt/decrypt key material stored in DB.
+
+    Order of resolution:
+    1) If env var `KLM_MASTER_KEY` is set -> use it.
+    2) Else, try to load it from a local file `.klm_master_key` in the project root.
+    3) Else, generate a new random 32-byte key, persist it to that file, and use it.
+
+    The key is hex-encoded when stored in env/file.
+    """
+
+    def _parse_hex_key(raw_hex: str) -> bytes:
+        key_bytes = bytes.fromhex(raw_hex.strip())
+        if len(key_bytes) != 32:
+            raise ValueError(
+                f"{_MASTER_KEY_ENV} must be exactly 32 bytes (64 hex chars), got {len(key_bytes)} bytes"
+            )
+        return key_bytes
+
     raw = os.environ.get(_MASTER_KEY_ENV)
-    if not raw:
-        raise RuntimeError(
-            f"Environment variable {_MASTER_KEY_ENV} is not set. "
-            "Generate one with: openssl rand -hex 32"
-        )
-    key = bytes.fromhex(raw.strip())
-    if len(key) != 32:
-        raise ValueError(f"{_MASTER_KEY_ENV} must be exactly 32 bytes (64 hex chars)")
+    if raw:
+        return _parse_hex_key(raw)
+
+    project_root = _find_project_root()
+    key_file = project_root / _MASTER_KEY_FILE_NAME
+
+    if key_file.exists():
+        key_hex = key_file.read_text(encoding="utf-8").strip()
+        key = _parse_hex_key(key_hex)
+        os.environ[_MASTER_KEY_ENV] = key_hex
+        return key
+
+    # Generate and persist a new master key.
+    key = token_bytes(32)
+    key_hex = key.hex()
+    key_file.write_text(key_hex + "\n", encoding="utf-8")
+    os.environ[_MASTER_KEY_ENV] = key_hex
     return key
+
+
+def _find_project_root() -> Path:
+    """Find the project root directory.
+
+    We look for `pyproject.toml` in parents of this file.
+    Falls back to current working directory.
+    """
+    here = Path(__file__).resolve()
+    for parent in [here.parent, *here.parents]:
+        if (parent / "pyproject.toml").exists():
+            return parent
+    return Path.cwd().resolve()
 
 
 def _artifact_dir() -> Path:
     d = Path(os.environ.get(_OUTPUT_DIR_ENV, _DEFAULT_ARTIFACT_DIR))
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def _results_dir_for_dir(directory: Path) -> Path:
+    """Return `<directory>/results` ensuring it exists."""
+    results_dir = directory.resolve() / "results"
+    results_dir.mkdir(parents=True, exist_ok=True)
+    return results_dir
+
+
+def _is_under(child: Path, parent: Path) -> bool:
+    """Return True if `child` is inside `parent` (path-wise)."""
+    try:
+        child.resolve(strict=False).relative_to(parent.resolve(strict=False))
+        return True
+    except Exception:
+        return False
 
 
 def _encrypt_bytes_with_master(plaintext: bytes) -> tuple[bytes, dict[str, Any]]:
@@ -125,7 +186,10 @@ def _encrypt_bytes_with_master(plaintext: bytes) -> tuple[bytes, dict[str, Any]]
 def _decrypt_bytes_with_master(ciphertext: bytes, encryption_params: dict[str, Any]) -> bytes:
     """Decrypt ciphertext bytes with the master key."""
     master_key = _get_master_key()
-    iv = bytes.fromhex(encryption_params["iv"])
+    iv_hex = encryption_params.get("iv")
+    if not iv_hex:
+        raise KeyError("iv")
+    iv = bytes.fromhex(iv_hex)
 
     plaintext = _run(
         [
@@ -173,6 +237,62 @@ class CryptoService:
     # ------------------------------------------------------------------
     # Internal lookup helpers
     # ------------------------------------------------------------------
+
+    def _get_key_bytes(self, key: models.Key) -> bytes:
+        """Return usable key material bytes for OpenSSL.
+
+        Expected DB format is encrypted (BYTEA) + encryption_params containing an IV.
+        For backwards compatibility with old UI-imported keys, if the IV is missing
+        we treat `encrypted_material` as already-raw key bytes.
+        """
+        try:
+            if isinstance(key.encryption_params, dict) and key.encryption_params.get("iv"):
+                return _decrypt_bytes_with_master(bytes(key.encrypted_material), key.encryption_params)
+        except KeyError:
+            # fall through to raw
+            pass
+
+        # Legacy/"import" keys: material stored as-is.
+        return bytes(key.encrypted_material)
+
+    def _find_original_decrypted_path(self, file_id: uuid.UUID) -> Path | None:
+        """Best-effort: find the path of the originally added plaintext file.
+
+        We prefer a decrypted artifact path that is *outside* our artifact temp dir
+        (e.g. a user-selected file on Desktop/Project folder), because later decrypt
+        operations may create additional decrypted artifacts under temp.
+        """
+        decrypted_type = self._require_artifact_type("decrypted")
+        artifact_root = _artifact_dir().resolve(strict=False)
+
+        stmt = (
+            select(models.FileArtifact)
+            .where(
+                models.FileArtifact.file_id == file_id,
+                models.FileArtifact.artifact_type_id == decrypted_type.id,
+            )
+            .order_by(models.FileArtifact.created_at.asc())
+        )
+
+        for art in self.session.scalars(stmt):
+            if not art.path:
+                continue
+            p = Path(art.path).resolve(strict=False)
+            name_lower = p.name.lower()
+
+            # Ignore meta sidecars and encrypted-looking files.
+            if name_lower.endswith(".meta"):
+                continue
+            if name_lower.endswith(".enc") or ".enc." in name_lower:
+                continue
+
+            # Prefer paths outside artifact temp dir.
+            if _is_under(p, artifact_root):
+                continue
+
+            return p
+
+        return None
 
     def _require_key_type(self, name: str) -> models.KeyType:
         kt = self.key_types.get_by_name(name)
@@ -413,13 +533,15 @@ class CryptoService:
         self.session.flush()
 
         try:
-            # Decrypt key material from DB
-            key_bytes = _decrypt_bytes_with_master(
-                bytes(key.encrypted_material), key.encryption_params
-            )
+            key_bytes = self._get_key_bytes(key)
 
-            # Determine output path
-            out_path = _artifact_dir() / f"{file_record.id}_{variant.name}.enc"
+            # Determine output path: put results next to the originally added file (if we can find it).
+            original_path = self._find_original_decrypted_path(file_record.id)
+            base_dir = (original_path.parent if original_path else src.resolve().parent)
+            out_dir = _results_dir_for_dir(base_dir)
+            base_name = (original_path.stem if original_path else src.stem)
+            out_name = f"{base_name}.{variant.name}.enc"
+            out_path = out_dir / out_name
 
             # Run OpenSSL encryption
             self._openssl_encrypt_file(
@@ -531,9 +653,7 @@ class CryptoService:
         self.session.flush()
 
         try:
-            key_bytes = _decrypt_bytes_with_master(
-                bytes(key.encrypted_material), key.encryption_params
-            )
+            key_bytes = self._get_key_bytes(key)
 
             enc_path = Path(artifact.path)
             meta_path = str(enc_path) + ".meta"
@@ -543,10 +663,26 @@ class CryptoService:
             with open(meta_path) as f:
                 meta = json.load(f)
 
-            cipher = meta["cipher"]
-            iv = bytes.fromhex(meta["iv"])
+            try:
+                cipher = meta["cipher"]
+                iv_hex = meta["iv"]
+            except KeyError as exc:
+                missing = exc.args[0] if exc.args else "<unknown>"
+                raise RuntimeError(f"Metadata file missing '{missing}': {meta_path}") from exc
 
-            out_path = _artifact_dir() / f"{artifact.file_id}_decrypted{enc_path.suffix}"
+            iv = bytes.fromhex(iv_hex)
+
+            original_path = self._find_original_decrypted_path(artifact.file_id)
+            base_dir = (original_path.parent if original_path else enc_path.resolve().parent)
+            out_dir = _results_dir_for_dir(base_dir)
+
+            # Friendly name based on the original, if available.
+            if original_path:
+                out_name = f"{original_path.stem}.decrypted{original_path.suffix}"
+            else:
+                out_name = f"{enc_path.stem}.decrypted"
+
+            out_path = out_dir / out_name
 
             cmd = [
                 "openssl", "enc", f"-{cipher}", "-d",
@@ -590,22 +726,19 @@ class CryptoService:
 
     def _resolve_variant(self, key: models.Key, variant_name: str) -> models.AlgorithmVariant:
         """Resolve AlgorithmVariant by name; falls back to the key's own variant."""
-        if variant_name:
-            variant = self.variants.get(key.algorithm_id)
-            if variant and variant.name == variant_name:
-                return variant
-            # Try to find by name within the same algorithm
-            alg_variant = self.variants.get(key.algorithm_id)
-            if alg_variant:
-                found = AlgorithmVariantRepository(self.session).get_by_name(
-                    variant_name, alg_variant.algorithm_id
-                )
-                if found:
-                    return found
-        variant = self.variants.get(key.algorithm_id)
-        if not variant:
+        base_variant = self.variants.get(key.algorithm_id)
+        if not base_variant:
             raise ValueError(f"Could not resolve AlgorithmVariant for key '{key.id}'.")
-        return variant
+
+        if not variant_name or base_variant.name == variant_name:
+            return base_variant
+
+        # Try to find by name within the same algorithm as the key's variant.
+        found = self.variants.get_by_name(variant_name, base_variant.algorithm_id)
+        if found:
+            return found
+
+        return base_variant
 
     def _cipher_and_iv_for_variant(
         self, variant: models.AlgorithmVariant
@@ -613,11 +746,9 @@ class CryptoService:
         """Map variant name to an OpenSSL cipher string and generate a fresh IV."""
         name_upper = variant.name.upper()
 
-        # Determine IV size: GCM/CCM use 12 bytes, CBC/CTR use 16 bytes
-        if "GCM" in name_upper or "CCM" in name_upper:
-            iv_size = 12
-        else:
-            iv_size = 16
+        # This service uses `openssl enc` (symmetric). Refuse RSA variants early.
+        if name_upper.startswith("RSA") or " RSA" in name_upper:
+            raise NotImplementedError("encrypt/decrypt via openssl enc is not supported for RSA variants.")
 
         # Map to OpenSSL cipher name
         cipher_map = {
@@ -633,13 +764,21 @@ class CryptoService:
             # Try to derive from variant params or use a safe default
             cipher = variant.params.get("openssl_cipher", "aes-256-cbc")
 
+        # Determine IV size based on the *actual cipher* chosen.
+        # GCM/CCM typically use 12-byte nonce, CBC/CTR use 16-byte IV.
+        cipher_upper = cipher.upper()
+        if cipher_upper.endswith("-GCM") or cipher_upper.endswith("-CCM"):
+            iv_size = 12
+        else:
+            iv_size = 16
+
         iv = os.urandom(iv_size)
         return cipher, iv
 
     def _get_or_create_file(
         self, src: Path, original_hash: str, original_size: int
     ) -> models.File:
-        existing = self.files.get_by_path(str(src.resolve())) if hasattr(self.files, "get_by_path") else None
+        existing = self.files.get_by_path(str(src.resolve()))
         if existing:
             return existing
         file_record = models.File(
@@ -659,9 +798,7 @@ class CryptoService:
         size: int,
         hash_: str,
     ) -> models.FileArtifact:
-        existing = self.file_artifacts.get_by_file_type_path(
-            file_record.id, artifact_type.id, path
-        ) if hasattr(self.file_artifacts, "get_by_file_type_path") else None
+        existing = self.file_artifacts.get_by_file_type_path(file_record.id, artifact_type.id, path)
         if existing:
             return existing
         artifact = models.FileArtifact(

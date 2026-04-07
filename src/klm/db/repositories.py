@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from . import models
-from sqlalchemy import func, select
+
 
 T = TypeVar("T")
 
@@ -24,12 +24,14 @@ class Repository(Generic[T]):
     """
 
     session: Session
-'''repos pt fiecare model, incluzand modelele lookup'''
-#pt entitatile cu date fixe, avem doar get_by_id, get_by_name, list_all
+
+
+# Repos pt fiecare model, incluzand modelele lookup.
+# Pt entitatile cu date fixe, avem doar get_by_id, get_by_name, list_all.
 
 @dataclass(frozen=True)
 class KeyTypeRepository(Repository[models.KeyType]):
-    def get(self, key_type_id: int) -> models.KeyType | None:
+    def get(self, key_type_id: uuid.UUID) -> models.KeyType | None:
         return self.session.get(models.KeyType, key_type_id)
 
     def get_by_name(self, name: str) -> models.KeyType | None:
@@ -43,7 +45,7 @@ class KeyTypeRepository(Repository[models.KeyType]):
     
 @dataclass(frozen=True)
 class KeyUsageRepository(Repository[models.KeyUsage]):
-    def get(self, usage_id: int) -> models.KeyUsage | None:
+    def get(self, usage_id: uuid.UUID) -> models.KeyUsage | None:
         return self.session.get(models.KeyUsage, usage_id)
 
     def get_by_name(self, name: str) -> models.KeyUsage | None:
@@ -69,7 +71,7 @@ class AlgorithmTypeRepository(Repository[models.AlgorithmType]):
     
 @dataclass(frozen=True)
 class ArtifactTypeRepository(Repository[models.ArtifactType]):
-    def get(self, artifact_type_id: int) -> models.ArtifactType | None:
+    def get(self, artifact_type_id: uuid.UUID) -> models.ArtifactType | None:
         return self.session.get(models.ArtifactType, artifact_type_id)
 
     def get_by_name(self, name: str) -> models.ArtifactType | None:
@@ -82,7 +84,7 @@ class ArtifactTypeRepository(Repository[models.ArtifactType]):
     
 @dataclass(frozen=True)
 class CryptoOperationTypeRepository(Repository[models.CryptoOperationType]):
-    def get(self, operation_type_id: int) -> models.CryptoOperationType | None:
+    def get(self, operation_type_id: uuid.UUID) -> models.CryptoOperationType | None:
         return self.session.get(models.CryptoOperationType, operation_type_id)
 
     def get_by_name(self, name: str) -> models.CryptoOperationType | None:
@@ -95,7 +97,7 @@ class CryptoOperationTypeRepository(Repository[models.CryptoOperationType]):
 
 @dataclass(frozen=True)
 class ResultTypeRepository(Repository[models.ResultType]):
-    def get(self, result_type_id: int) -> models.ResultType | None:
+    def get(self, result_type_id: uuid.UUID) -> models.ResultType | None:
         return self.session.get(models.ResultType, result_type_id)
 
     def get_by_name(self, name: str) -> models.ResultType | None:
@@ -108,7 +110,7 @@ class ResultTypeRepository(Repository[models.ResultType]):
 
 @dataclass(frozen=True)
 class PerformanceMetricTypeRepository(Repository[models.PerformanceMetricType]):
-    def get(self, metric_type_id: int) -> models.PerformanceMetricType | None:
+    def get(self, metric_type_id: uuid.UUID) -> models.PerformanceMetricType | None:
         return self.session.get(models.PerformanceMetricType, metric_type_id)
 
     def get_by_name(self, name: str) -> models.PerformanceMetricType | None:
@@ -167,7 +169,15 @@ class FileRepository(Repository[models.File]):
         return list(self.session.scalars(stmt))
     #util cli
     def get_by_path(self, path: str) -> models.File | None:
-        stmt = select(models.File).where(models.File.path == path)
+        # NOTE: models.File does not store filesystem paths.
+        # The path is stored on models.FileArtifact.path.
+        stmt = (
+            select(models.File)
+            .join(models.FileArtifact, models.FileArtifact.file_id == models.File.id)
+            .where(models.FileArtifact.path == path)
+            .order_by(models.File.created_at.desc())
+            .limit(1)
+        )
         return self.session.scalar(stmt)
     #sterg file
     def delete(self, file: models.File) -> None:
@@ -193,7 +203,7 @@ class CryptoOperationRepository(Repository[models.CryptoOperation]):
         stmt = select(models.CryptoOperation).where(models.CryptoOperation.file_id == file_id)
         return list(self.session.scalars(stmt))
 
-    def list_by_provider(self, provider_id: int) -> list[models.CryptoOperation]:
+    def list_by_provider(self, provider_id: uuid.UUID) -> list[models.CryptoOperation]:
         stmt = select(models.CryptoOperation).where(models.CryptoOperation.provider_id == provider_id)
         return list(self.session.scalars(stmt))
 
@@ -239,7 +249,7 @@ class AlgorithmRepository(Repository[models.Algorithm]):
         self.session.add(algorithm) 
     def update(self, algorithm: models.Algorithm) -> None:
         self.session.merge(algorithm)
-    def get(self, algorithm_id: int) -> models.Algorithm | None:
+    def get(self, algorithm_id: uuid.UUID) -> models.Algorithm | None:
         return self.session.get(models.Algorithm, algorithm_id)
 
     def get_by_name(self, name: str) -> models.Algorithm | None:
@@ -249,11 +259,21 @@ class AlgorithmRepository(Repository[models.Algorithm]):
     def list_all(self) -> list[models.Algorithm]:
         stmt = select(models.Algorithm).order_by(models.Algorithm.created_at.desc())
         return list(self.session.scalars(stmt))
-    def update_algorithm(self, key: models.Key, new_algorithm_id) -> None:
-        algorithm = self.session.get(models.Algorithm, new_algorithm_id)
-        if not algorithm or algorithm.name.lower() not in ("aes", "rsa"):
-            raise ValueError("algorithm_id trebuie sa fie pentru un algoritm cu numele 'AES' sau 'RSA' (case-insensitive).")
-        key.algorithm_id = new_algorithm_id
+    def update_algorithm(self, key: models.Key, new_algorithm_id: uuid.UUID) -> None:
+        """Update key.algorithm_id.
+
+        NOTE: `keys.algorithm_id` references `algorithm_variants.id` (not `algorithms.id`).
+        This method keeps the original public name but treats `new_algorithm_id` as an
+        AlgorithmVariant id.
+        """
+        variant = self.session.get(models.AlgorithmVariant, new_algorithm_id)
+        if not variant:
+            raise ValueError("algorithm_id trebuie sa fie un AlgorithmVariant.id valid.")
+        if variant.algorithm and variant.algorithm.name.lower() not in ("aes", "rsa"):
+            raise ValueError(
+                "algorithm_id trebuie sa fie pentru un algoritm cu numele 'AES' sau 'RSA' (case-insensitive)."
+            )
+        key.algorithm_id = variant.id
         self.session.commit()
     def delete(self, algorithm: models.Algorithm) -> None:
         self.session.delete(algorithm)
@@ -262,7 +282,7 @@ class AlgorithmRepository(Repository[models.Algorithm]):
 class CryptoProviderRepository(Repository[models.CryptoProvider]):
     def add(self, provider: models.CryptoProvider) -> None:
         self.session.add(provider)
-    def get(self, provider_id: int) -> models.CryptoProvider | None:
+    def get(self, provider_id: uuid.UUID) -> models.CryptoProvider | None:
         return self.session.get(models.CryptoProvider, provider_id)
 
     def get_by_name(self, name: str) -> models.CryptoProvider | None:
@@ -286,6 +306,19 @@ class FileArtifactRepository(Repository[models.FileArtifact]):
 
     def add(self, artifact: models.FileArtifact) -> None:
         self.session.add(artifact)
+
+    def get_by_file_type_path(
+        self,
+        file_id: uuid.UUID,
+        artifact_type_id: uuid.UUID,
+        path: str,
+    ) -> models.FileArtifact | None:
+        stmt = select(models.FileArtifact).where(
+            models.FileArtifact.file_id == file_id,
+            models.FileArtifact.artifact_type_id == artifact_type_id,
+            models.FileArtifact.path == path,
+        )
+        return self.session.scalar(stmt)
     
     def update(self, artifact: models.FileArtifact) -> None:
         self.session.merge(artifact)
