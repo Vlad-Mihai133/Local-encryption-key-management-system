@@ -482,6 +482,26 @@ class KLMApp(tk.Tk):
             base_name = Path(original_name).stem or p.stem
 
         with self.Session() as session:
+            existing_artifact = session.scalar(
+                select(models.FileArtifact)
+                .join(models.ArtifactType, models.ArtifactType.id == models.FileArtifact.artifact_type_id)
+                .where(
+                    models.FileArtifact.path == str(p),
+                    models.ArtifactType.name == artifact_type_name,
+                )
+                .order_by(models.FileArtifact.created_at.desc())
+                .limit(1)
+            )
+            if existing_artifact is not None:
+                existing_file = session.get(models.File, existing_artifact.file_id)
+                if existing_file is not None:
+                    existing_file.original_size_bytes = size_bytes
+                    existing_file.original_hash = digest
+                    self.selected_file = existing_file
+                    self.refresh()
+                    self._set_status(f"Fisierul exista deja in DB: {existing_file.name} ({artifact_type_name})")
+                    return
+
             existing_names = set(session.scalars(select(models.File.name)))
             name = _unique_name(existing_names, base_name)
 
@@ -550,7 +570,7 @@ class KLMApp(tk.Tk):
                 status="active",
                 usage_id=payload.usage_id,
                 encrypted_material=encrypted_material,
-                material_format="raw",
+                material_format=payload.material_format,
                 encryption_scheme="app-level-aes-256-cbc",
                 encryption_params=enc_params,
             )
@@ -568,6 +588,7 @@ class ImportKeyPayload:
     usage_id: uuid.UUID
     variant_id: uuid.UUID
     encrypted_material_b64: str
+    material_format: str
 
 
 class _DebugKeyDialog(tk.Toplevel):
@@ -718,7 +739,7 @@ class _ImportKeyDialog(tk.Toplevel):
     def __init__(self, app: KLMApp) -> None:
         super().__init__(app)
         self.title("Import cheie")
-        self.geometry("560x420")
+        self.geometry("560x470")
         self.resizable(False, False)
         self.result: ImportKeyPayload | None = None
 
@@ -738,12 +759,13 @@ class _ImportKeyDialog(tk.Toplevel):
         self.type_cb.bind("<<ComboboxSelected>>", self._on_type_selected)
 
         ttk.Label(root, text="Usage").grid(row=2, column=0, sticky="w", padx=(0, 10), pady=6)
-        self.usage_cb = ttk.Combobox(root, state="readonly")
+        self.usage_cb = ttk.Combobox(root, state="disabled")
         self.usage_cb.grid(row=2, column=1, sticky="ew", pady=6)
 
         ttk.Label(root, text="Varianta algoritm").grid(row=3, column=0, sticky="w", padx=(0, 10), pady=6)
         self.variant_cb = ttk.Combobox(root, state="readonly")
         self.variant_cb.grid(row=3, column=1, sticky="ew", pady=6)
+        self.variant_cb.bind("<<ComboboxSelected>>", self._on_variant_selected)
 
         ttk.Label(root, text="encrypted_material (Base64)").grid(
             row=4, column=0, sticky="nw", padx=(0, 10), pady=6
@@ -751,8 +773,20 @@ class _ImportKeyDialog(tk.Toplevel):
         self.material_text = tk.Text(root, height=10, wrap="word")
         self.material_text.grid(row=4, column=1, sticky="ew", pady=6)
 
+        hint = ttk.Label(
+            root,
+            text="Pentru AES se genereaza bytes random. Pentru RSA se genereaza pereche public/private intr-o singura intrare logica.",
+            wraplength=380,
+            justify="left",
+        )
+        hint.grid(row=5, column=1, sticky="w", pady=(0, 6))
+
+        actions = ttk.Frame(root)
+        actions.grid(row=6, column=1, sticky="w", pady=(0, 6))
+        ttk.Button(actions, text="Generate random key", command=self._generate_random_key).pack(side=tk.LEFT)
+
         btns = ttk.Frame(root)
-        btns.grid(row=5, column=0, columnspan=2, sticky="e", pady=(12, 0))
+        btns.grid(row=7, column=0, columnspan=2, sticky="e", pady=(12, 0))
         ttk.Button(btns, text="Anuleaza", command=self.destroy).pack(side=tk.RIGHT)
         ttk.Button(btns, text="Import", command=self._on_import).pack(side=tk.RIGHT, padx=8)
 
@@ -772,7 +806,8 @@ class _ImportKeyDialog(tk.Toplevel):
         self.variant_cb["values"] = [v.name for v in variants]
 
         if key_types:
-            self.type_cb.current(0)
+            symmetric_index = next((i for i, t in enumerate(key_types) if t.name == "symmetric"), 0)
+            self.type_cb.current(symmetric_index)
             self._sync_usage_cb()
         if variants:
             # preselect current variant from main window if possible
@@ -781,20 +816,13 @@ class _ImportKeyDialog(tk.Toplevel):
                 self.variant_cb.set(current.name)
             else:
                 self.variant_cb.current(0)
+            self._sync_type_from_variant()
 
     def _allowed_usages_for_type(self, type_name: str) -> list[models.KeyUsage]:
-        type_name = type_name.strip().lower()
-        if type_name == "symmetric":
-            return [u for u in self._usages if u.name == "file_encryption"]
-        if type_name == "asymmetric_private":
-            return [u for u in self._usages if u.name in {"signing", "key_wrapping"}]
-        if type_name == "asymmetric_public":
-            return [u for u in self._usages if u.name == "key_wrapping"]
-        return list(self._usages)
+        return [u for u in self._usages if u.name == "file_encryption"]
 
     def _sync_usage_cb(self) -> None:
-        type_name = self.type_cb.get()
-        allowed_usages = self._allowed_usages_for_type(type_name) if type_name else list(self._usages)
+        allowed_usages = self._allowed_usages_for_type(self.type_cb.get())
         allowed_names = [u.name for u in allowed_usages]
         current_usage = self.usage_cb.get()
         self.usage_cb["values"] = allowed_names
@@ -808,6 +836,45 @@ class _ImportKeyDialog(tk.Toplevel):
 
     def _on_type_selected(self, _evt=None) -> None:
         self._sync_usage_cb()
+
+    def _variant_is_rsa(self, variant_name: str) -> bool:
+        return variant_name.strip().upper().startswith("RSA")
+
+    def _sync_type_from_variant(self) -> None:
+        variant_name = self.variant_cb.get()
+        target_type = "asymmetric_private" if self._variant_is_rsa(variant_name) else "symmetric"
+        if target_type in self.type_cb["values"]:
+            self.type_cb.set(target_type)
+        self._sync_usage_cb()
+
+    def _on_variant_selected(self, _evt=None) -> None:
+        self._sync_type_from_variant()
+
+    def _material_format_for_variant(self, variant_name: str) -> str:
+        if self._variant_is_rsa(variant_name):
+            return "rsa-key-pair-json"
+        return "raw"
+
+    def _generate_random_key(self) -> None:
+        variant_name = self.variant_cb.get()
+        variant = next((v for v in self._variants if v.name == variant_name), None)
+        if not variant:
+            return
+
+        with self.app.Session() as session:
+            service = CryptoService(session=session)
+            algorithm = getattr(getattr(variant, "algorithm", None), "name", None)
+            if not algorithm:
+                algorithm_obj = session.get(models.Algorithm, variant.algorithm_id)
+                algorithm = algorithm_obj.name if algorithm_obj else None
+            if not algorithm:
+                messagebox.showerror("KLM - import cheie", "Nu pot determina algoritmul pentru varianta selectata.", parent=self)
+                return
+            material, _material_format = service._generate_key_material(str(algorithm).upper(), variant)
+
+        material_b64 = base64.b64encode(material).decode("ascii")
+        self.material_text.delete("1.0", tk.END)
+        self.material_text.insert("1.0", material_b64)
 
     def _on_import(self) -> None:
         name = self.name_entry.get().strip()
@@ -833,6 +900,7 @@ class _ImportKeyDialog(tk.Toplevel):
             usage_id=usage.id,
             variant_id=variant.id,
             encrypted_material_b64=material_b64,
+            material_format=self._material_format_for_variant(variant.name),
         )
         self.destroy()
 

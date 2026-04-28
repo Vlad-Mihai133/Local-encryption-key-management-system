@@ -22,6 +22,7 @@ def session(engine):
 
 def test_algorithm_crud(session):
 # Ccurata db inainte de test
+    session.query(models.AlgorithmVariant).delete()
     session.query(models.Algorithm).delete()
     session.query(models.AlgorithmType).delete()
     session.commit()

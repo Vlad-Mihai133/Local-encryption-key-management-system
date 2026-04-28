@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -15,6 +16,9 @@ from typing import Any
 
 from cryptography import __version__ as _CRYPTOGRAPHY_VERSION
 from cryptography.hazmat.primitives import padding
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding as asymmetric_padding
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -54,6 +58,8 @@ _PROVIDER_NAME = "openssl"
 _PROVIDER_VERSION = "3"
 _CRYPTOGRAPHY_PROVIDER_NAME = "cryptography"
 _DEFAULT_FILE_BACKEND = "openssl"
+_RSA_PAIR_MATERIAL_FORMAT = "rsa-key-pair-json"
+_RSA_HYBRID_DATA_CIPHER = "aes-256-gcm"
 
 
 # ---------------------------------------------------------------------------
@@ -260,6 +266,26 @@ class CryptoService:
         # Legacy/"import" keys: material stored as-is.
         return bytes(key.encrypted_material)
 
+    def _get_decrypted_key_material(self, key: models.Key) -> bytes:
+        if isinstance(key.encryption_params, dict) and key.encryption_params.get("iv"):
+            return _decrypt_bytes_with_master(bytes(key.encrypted_material), key.encryption_params)
+        return bytes(key.encrypted_material)
+
+    def _get_rsa_key_pair(self, key: models.Key) -> dict[str, bytes]:
+        if key.material_format != _RSA_PAIR_MATERIAL_FORMAT:
+            raise ValueError(f"Key '{key.id}' does not store an RSA key pair.")
+
+        payload = json.loads(self._get_decrypted_key_material(key).decode("utf-8"))
+        private_key_b64 = payload.get("private_key_b64")
+        public_key_b64 = payload.get("public_key_b64")
+        if not private_key_b64 or not public_key_b64:
+            raise ValueError(f"Key '{key.id}' RSA pair payload is incomplete.")
+
+        return {
+            "private_key": base64.b64decode(private_key_b64),
+            "public_key": base64.b64decode(public_key_b64),
+        }
+
     def _find_original_decrypted_path(self, file_id: uuid.UUID) -> Path | None:
         """Best-effort: find the path of the originally added plaintext file.
 
@@ -382,6 +408,12 @@ class CryptoService:
         variant = self.variants.get(variant_id)
         if not variant:
             raise ValueError(f"AlgorithmVariant '{variant_id}' not found.")
+        if usage != "file_encryption":
+            raise ValueError("Only 'file_encryption' usage is supported in this project.")
+        if algorithm.upper() == "AES" and key_type != "symmetric":
+            raise ValueError("AES keys must use key_type='symmetric'.")
+        if algorithm.upper() == "RSA" and key_type != "asymmetric_private":
+            raise ValueError("RSA keys are stored as a logical key pair under key_type='asymmetric_private'.")
 
         kt = self._require_key_type(key_type)
         ku = self._require_key_usage(usage)
@@ -405,8 +437,8 @@ class CryptoService:
         self.session.flush()
 
         try:
-            key_bytes = self._generate_key_bytes(algorithm.upper(), variant)
-            encrypted_material, enc_params = _encrypt_bytes_with_master(key_bytes)
+            key_material, material_format = self._generate_key_material(algorithm.upper(), variant)
+            encrypted_material, enc_params = _encrypt_bytes_with_master(key_material)
             elapsed_ms = (time.perf_counter() - t0) * 1000
 
             key = models.Key(
@@ -416,7 +448,7 @@ class CryptoService:
                 usage_id=ku.id,
                 status="active",
                 encrypted_material=encrypted_material,
-                material_format="raw",
+                material_format=material_format,
                 encryption_scheme="app-level-aes-256-cbc",
                 encryption_params=enc_params,
             )
@@ -435,14 +467,13 @@ class CryptoService:
             operation.error_message = str(exc)
             raise
 
-    def _generate_key_bytes(self, algorithm: str, variant: models.AlgorithmVariant) -> bytes:
-        """Dispatch to the correct OpenSSL keygen command."""
+    def _generate_key_material(self, algorithm: str, variant: models.AlgorithmVariant) -> tuple[bytes, str]:
+        """Dispatch to the correct key generation implementation."""
         if algorithm == "AES":
-            return self._gen_aes_key(variant)
-        elif algorithm == "RSA":
-            return self._gen_rsa_key(variant)
-        else:
-            raise NotImplementedError(f"Key generation for algorithm '{algorithm}' is not supported.")
+            return self._gen_aes_key(variant), "raw"
+        if algorithm == "RSA":
+            return self._gen_rsa_key_pair_payload(variant), _RSA_PAIR_MATERIAL_FORMAT
+        raise NotImplementedError(f"Key generation for algorithm '{algorithm}' is not supported.")
 
     def _gen_aes_key(self, variant: models.AlgorithmVariant) -> bytes:
         """Generate random AES key bytes.
@@ -456,11 +487,8 @@ class CryptoService:
         raw = _run(["openssl", "rand", str(key_bytes_count)])
         return raw
 
-    def _gen_rsa_key(self, variant: models.AlgorithmVariant) -> bytes:
-        """Generate RSA private key in PEM format.
-
-        Variant name examples: RSA-2048, RSA-4096.
-        """
+    def _gen_rsa_key_pair_payload(self, variant: models.AlgorithmVariant) -> bytes:
+        """Generate an RSA private/public key pair bundle serialized as JSON."""
         key_bits = variant.params.get("key_bits")
         if not key_bits:
             for part in variant.name.replace("-", " ").split():
@@ -470,8 +498,13 @@ class CryptoService:
         if not key_bits:
             key_bits = 2048
 
-        pem = _run(["openssl", "genrsa", str(int(key_bits))])
-        return pem
+        private_pem = _run(["openssl", "genrsa", str(int(key_bits))])
+        public_pem = _run(["openssl", "rsa", "-pubout"], input_data=private_pem)
+        payload = {
+            "private_key_b64": base64.b64encode(private_pem).decode("ascii"),
+            "public_key_b64": base64.b64encode(public_pem).decode("ascii"),
+        }
+        return json.dumps(payload).encode("utf-8")
 
     # ------------------------------------------------------------------
     # encrypt_file
@@ -539,8 +572,6 @@ class CryptoService:
         self.session.flush()
 
         try:
-            key_bytes = self._get_key_bytes(key)
-
             # Determine output path: put results next to the originally added file (if we can find it).
             original_path = self._find_original_decrypted_path(file_record.id)
             base_dir = (original_path.parent if original_path else src.resolve().parent)
@@ -553,13 +584,17 @@ class CryptoService:
                 out_dir / out_name,
             )
 
-            self._encrypt_file_with_backend(
-                backend=backend,
-                src=str(src),
-                dst=str(out_path),
-                key_bytes=key_bytes,
-                variant=variant,
-            )
+            if self._is_rsa_variant(variant):
+                self._encrypt_file_with_rsa_hybrid(src=str(src), dst=str(out_path), key=key)
+            else:
+                key_bytes = self._get_key_bytes(key)
+                self._encrypt_file_with_backend(
+                    backend=backend,
+                    src=str(src),
+                    dst=str(out_path),
+                    key_bytes=key_bytes,
+                    variant=variant,
+                )
             self._merge_artifact_metadata(
                 str(out_path),
                 {
@@ -643,6 +678,34 @@ class CryptoService:
             meta["tag"] = encryptor.tag.hex()
         self._write_artifact_metadata(dst, meta)
 
+    def _encrypt_file_with_rsa_hybrid(self, *, src: str, dst: str, key: models.Key) -> None:
+        pair = self._get_rsa_key_pair(key)
+        public_key = serialization.load_pem_public_key(pair["public_key"])
+
+        session_key = AESGCM.generate_key(bit_length=256)
+        nonce = os.urandom(12)
+        plaintext = Path(src).read_bytes()
+        ciphertext = AESGCM(session_key).encrypt(nonce, plaintext, None)
+        wrapped_key = public_key.encrypt(
+            session_key,
+            asymmetric_padding.OAEP(
+                mgf=asymmetric_padding.MGF1(algorithm=hashes.SHA256()),
+                algorithm=hashes.SHA256(),
+                label=None,
+            ),
+        )
+
+        Path(dst).write_bytes(ciphertext)
+        self._write_artifact_metadata(
+            dst,
+            {
+                "backend": _CRYPTOGRAPHY_PROVIDER_NAME,
+                "cipher": _RSA_HYBRID_DATA_CIPHER,
+                "wrapped_key_b64": base64.b64encode(wrapped_key).decode("ascii"),
+                "nonce": nonce.hex(),
+            },
+        )
+
     def _encrypt_file_with_backend(
         self,
         *,
@@ -714,8 +777,6 @@ class CryptoService:
         self.session.flush()
 
         try:
-            key_bytes = self._get_key_bytes(key)
-
             original_path = self._find_original_decrypted_path(artifact.file_id)
             base_dir = (original_path.parent if original_path else enc_path.resolve().parent)
             out_dir = _results_dir_for_dir(base_dir)
@@ -732,14 +793,18 @@ class CryptoService:
                 out_dir / out_name,
             )
 
-            self._decrypt_file_with_backend(
-                backend=backend,
-                src=str(enc_path),
-                dst=str(out_path),
-                key_bytes=key_bytes,
-                variant=variant,
-                meta=meta,
-            )
+            if self._is_rsa_variant(variant):
+                self._decrypt_file_with_rsa_hybrid(src=str(enc_path), dst=str(out_path), key=key, meta=meta)
+            else:
+                key_bytes = self._get_key_bytes(key)
+                self._decrypt_file_with_backend(
+                    backend=backend,
+                    src=str(enc_path),
+                    dst=str(out_path),
+                    key_bytes=key_bytes,
+                    variant=variant,
+                    meta=meta,
+                )
 
             elapsed_ms = (time.perf_counter() - t0) * 1000
             dec_hash = _sha256_file(str(out_path))
@@ -815,10 +880,17 @@ class CryptoService:
             return stored
         if requested:
             return requested
+        if self._is_rsa_variant(variant):
+            return _CRYPTOGRAPHY_PROVIDER_NAME
         mode_name = self._variant_mode_name(variant)
         if mode_name in {"GCM", "CCM"}:
             return _CRYPTOGRAPHY_PROVIDER_NAME
         return _DEFAULT_FILE_BACKEND
+
+    def _is_rsa_variant(self, variant: models.AlgorithmVariant) -> bool:
+        name_upper = variant.name.upper()
+        algorithm_name = getattr(getattr(variant, "algorithm", None), "name", "")
+        return name_upper.startswith("RSA") or str(algorithm_name).upper() == "RSA"
 
     def _key_bits_for_variant(self, variant: models.AlgorithmVariant) -> int:
         key_bits = variant.params.get("key_bits")
@@ -833,8 +905,8 @@ class CryptoService:
 
     def _variant_mode_name(self, variant: models.AlgorithmVariant) -> str:
         name_upper = variant.name.upper()
-        if name_upper.startswith("RSA") or " RSA" in name_upper:
-            raise NotImplementedError("encrypt/decrypt is not supported for RSA file variants.")
+        if self._is_rsa_variant(variant):
+            raise NotImplementedError("RSA variants use the dedicated hybrid encryption flow.")
 
         for mode_name in ("GCM", "CCM", "CTR", "CBC"):
             if name_upper.endswith(f"-{mode_name}"):
@@ -961,6 +1033,34 @@ class CryptoService:
             unpadder = padding.PKCS7(algorithms.AES.block_size).unpadder()
             plaintext = unpadder.update(plaintext) + unpadder.finalize()
 
+        Path(dst).write_bytes(plaintext)
+
+    def _decrypt_file_with_rsa_hybrid(
+        self,
+        *,
+        src: str,
+        dst: str,
+        key: models.Key,
+        meta: dict[str, Any],
+    ) -> None:
+        try:
+            wrapped_key = base64.b64decode(meta["wrapped_key_b64"])
+            nonce = bytes.fromhex(meta["nonce"])
+        except KeyError as exc:
+            missing = exc.args[0] if exc.args else "<unknown>"
+            raise RuntimeError(f"Metadata file missing '{missing}' for '{src}.meta'.") from exc
+
+        pair = self._get_rsa_key_pair(key)
+        private_key = serialization.load_pem_private_key(pair["private_key"], password=None)
+        session_key = private_key.decrypt(
+            wrapped_key,
+            asymmetric_padding.OAEP(
+                mgf=asymmetric_padding.MGF1(algorithm=hashes.SHA256()),
+                algorithm=hashes.SHA256(),
+                label=None,
+            ),
+        )
+        plaintext = AESGCM(session_key).decrypt(nonce, Path(src).read_bytes(), None)
         Path(dst).write_bytes(plaintext)
 
     def _decrypt_file_with_backend(

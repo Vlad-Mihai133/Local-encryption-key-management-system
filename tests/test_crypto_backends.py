@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import json
 import shutil
 from pathlib import Path
 from types import SimpleNamespace
@@ -27,6 +29,12 @@ def _read_meta(path: Path) -> dict[str, str]:
 def test_auto_backend_prefers_cryptography_for_gcm() -> None:
     service = _service()
     backend = service._select_file_backend({}, variant=_variant("AES-256-GCM"))
+    assert backend == "cryptography"
+
+
+def test_auto_backend_prefers_cryptography_for_rsa() -> None:
+    service = _service()
+    backend = service._select_file_backend({}, variant=_variant("RSA-2048", key_bits=2048))
     assert backend == "cryptography"
 
 
@@ -82,6 +90,61 @@ def test_merge_artifact_metadata_preserves_backend_fields(tmp_path: Path) -> Non
     assert meta["mode"] == "GCM"
     assert meta["original_name"] == "hello.txt"
     assert meta["algorithm_variant"] == "AES-256-GCM"
+
+
+@pytest.mark.skipif(not OPENSSL_AVAILABLE, reason="openssl CLI is required for RSA key generation tests")
+def test_rsa_key_generation_returns_pair_bundle() -> None:
+    service = _service()
+    payload = service._gen_rsa_key_pair_payload(_variant("RSA-2048", key_bits=2048))
+    data = json.loads(payload.decode("utf-8"))
+
+    assert set(data) == {"private_key_b64", "public_key_b64"}
+    assert base64.b64decode(data["private_key_b64"]).startswith(b"-----BEGIN PRIVATE KEY-----") or base64.b64decode(data["private_key_b64"]).startswith(b"-----BEGIN RSA PRIVATE KEY-----")
+    assert base64.b64decode(data["public_key_b64"]).startswith(b"-----BEGIN PUBLIC KEY-----")
+
+
+@pytest.mark.skipif(not OPENSSL_AVAILABLE, reason="openssl CLI is required for RSA key generation tests")
+def test_get_rsa_key_pair_reads_bundle() -> None:
+    service = _service()
+    payload = service._gen_rsa_key_pair_payload(_variant("RSA-2048", key_bits=2048))
+    key = SimpleNamespace(
+        id="rsa-test",
+        material_format="rsa-key-pair-json",
+        encrypted_material=payload,
+        encryption_params={},
+    )
+
+    pair = service._get_rsa_key_pair(key)
+
+    assert pair["private_key"].startswith(b"-----BEGIN")
+    assert pair["public_key"].startswith(b"-----BEGIN PUBLIC KEY-----")
+
+
+@pytest.mark.skipif(not OPENSSL_AVAILABLE, reason="openssl CLI is required for RSA key generation tests")
+def test_rsa_hybrid_roundtrip(tmp_path: Path) -> None:
+    service = _service()
+    payload = service._gen_rsa_key_pair_payload(_variant("RSA-2048", key_bits=2048))
+    key = SimpleNamespace(
+        id="rsa-test",
+        material_format="rsa-key-pair-json",
+        encrypted_material=payload,
+        encryption_params={},
+    )
+    src = tmp_path / "plain.txt"
+    enc = tmp_path / "cipher.bin"
+    dec = tmp_path / "plain.out"
+    message = b"rsa hybrid encryption test" * 10
+    src.write_bytes(message)
+
+    service._encrypt_file_with_rsa_hybrid(src=str(src), dst=str(enc), key=key)
+    meta = _read_meta(enc)
+    service._decrypt_file_with_rsa_hybrid(src=str(enc), dst=str(dec), key=key, meta=meta)
+
+    assert dec.read_bytes() == message
+    assert meta["backend"] == "cryptography"
+    assert meta["cipher"] == "aes-256-gcm"
+    assert "wrapped_key_b64" in meta
+    assert "nonce" in meta
 
 
 @pytest.mark.skipif(not OPENSSL_AVAILABLE, reason="openssl CLI is required for cross-backend tests")

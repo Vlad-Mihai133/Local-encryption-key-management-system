@@ -178,9 +178,7 @@ INSERT INTO key_types(name) VALUES
 ON CONFLICT (name) DO NOTHING;
 
 INSERT INTO key_usages(name) VALUES
-    ('file_encryption'),
-    ('key_wrapping'),
-    ('signing')
+    ('file_encryption')
 ON CONFLICT (name) DO NOTHING;
 
 INSERT INTO algorithm_types(name) VALUES

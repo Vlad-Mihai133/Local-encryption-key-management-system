@@ -53,12 +53,12 @@ def build_parser() -> argparse.ArgumentParser:
     keygen.add_argument(
         "--key-type",
         required=True,
-        help="symmetric | asymmetric_private | asymmetric_public",
+        help="symmetric | asymmetric_private (RSA pair)",
     )
     keygen.add_argument(
         "--usage",
         required=True,
-        help="file_encryption | key_wrapping | signing",
+        help="file_encryption",
     )
 
     enc = sub.add_parser("encrypt", help="Encrypt a file")
