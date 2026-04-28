@@ -739,7 +739,7 @@ class _ImportKeyDialog(tk.Toplevel):
     def __init__(self, app: KLMApp) -> None:
         super().__init__(app)
         self.title("Import cheie")
-        self.geometry("560x470")
+        self.geometry("640x620")
         self.resizable(False, False)
         self.result: ImportKeyPayload | None = None
 
@@ -753,40 +753,44 @@ class _ImportKeyDialog(tk.Toplevel):
         self.name_entry = ttk.Entry(root)
         self.name_entry.grid(row=0, column=1, sticky="ew", pady=6)
 
-        ttk.Label(root, text="Tip cheie").grid(row=1, column=0, sticky="w", padx=(0, 10), pady=6)
-        self.type_cb = ttk.Combobox(root, state="readonly")
-        self.type_cb.grid(row=1, column=1, sticky="ew", pady=6)
-        self.type_cb.bind("<<ComboboxSelected>>", self._on_type_selected)
-
-        ttk.Label(root, text="Usage").grid(row=2, column=0, sticky="w", padx=(0, 10), pady=6)
+        ttk.Label(root, text="Usage").grid(row=1, column=0, sticky="w", padx=(0, 10), pady=6)
         self.usage_cb = ttk.Combobox(root, state="disabled")
-        self.usage_cb.grid(row=2, column=1, sticky="ew", pady=6)
+        self.usage_cb.grid(row=1, column=1, sticky="ew", pady=6)
 
-        ttk.Label(root, text="Varianta algoritm").grid(row=3, column=0, sticky="w", padx=(0, 10), pady=6)
+        ttk.Label(root, text="Varianta algoritm").grid(row=2, column=0, sticky="w", padx=(0, 10), pady=6)
         self.variant_cb = ttk.Combobox(root, state="readonly")
-        self.variant_cb.grid(row=3, column=1, sticky="ew", pady=6)
+        self.variant_cb.grid(row=2, column=1, sticky="ew", pady=6)
         self.variant_cb.bind("<<ComboboxSelected>>", self._on_variant_selected)
 
-        ttk.Label(root, text="encrypted_material (Base64)").grid(
-            row=4, column=0, sticky="nw", padx=(0, 10), pady=6
-        )
-        self.material_text = tk.Text(root, height=10, wrap="word")
-        self.material_text.grid(row=4, column=1, sticky="ew", pady=6)
+        self.material_label = ttk.Label(root, text="Material cheie (Base64)")
+        self.material_label.grid(row=3, column=0, sticky="nw", padx=(0, 10), pady=6)
+        self.material_frame = ttk.Frame(root)
+        self.material_frame.grid(row=3, column=1, sticky="ew", pady=6)
+        self.material_frame.columnconfigure(0, weight=1)
+
+        self.symmetric_material_text = tk.Text(self.material_frame, height=10, wrap="word")
+        self.symmetric_material_text.grid(row=0, column=0, sticky="ew")
+
+        self.public_key_label = ttk.Label(self.material_frame, text="Cheie publica (PEM sau Base64 PEM)")
+        self.public_key_text = tk.Text(self.material_frame, height=8, wrap="word")
+        self.private_key_label = ttk.Label(self.material_frame, text="Cheie privata (PEM sau Base64 PEM)")
+        self.private_key_text = tk.Text(self.material_frame, height=8, wrap="word")
 
         hint = ttk.Label(
             root,
-            text="Pentru AES se genereaza bytes random. Pentru RSA se genereaza pereche public/private intr-o singura intrare logica.",
-            wraplength=380,
+            text="Pentru AES folosesti un singur material Base64. Pentru RSA introduci sau generezi impreuna cheia publica si cheia privata.",
+            wraplength=460,
             justify="left",
         )
-        hint.grid(row=5, column=1, sticky="w", pady=(0, 6))
+        hint.grid(row=4, column=1, sticky="w", pady=(0, 6))
+        self.hint_label = hint
 
         actions = ttk.Frame(root)
-        actions.grid(row=6, column=1, sticky="w", pady=(0, 6))
+        actions.grid(row=5, column=1, sticky="w", pady=(0, 6))
         ttk.Button(actions, text="Generate random key", command=self._generate_random_key).pack(side=tk.LEFT)
 
         btns = ttk.Frame(root)
-        btns.grid(row=7, column=0, columnspan=2, sticky="e", pady=(12, 0))
+        btns.grid(row=6, column=0, columnspan=2, sticky="e", pady=(12, 0))
         ttk.Button(btns, text="Anuleaza", command=self.destroy).pack(side=tk.RIGHT)
         ttk.Button(btns, text="Import", command=self._on_import).pack(side=tk.RIGHT, padx=8)
 
@@ -802,12 +806,9 @@ class _ImportKeyDialog(tk.Toplevel):
         self._usages = usages
         self._variants = variants
 
-        self.type_cb["values"] = [t.name for t in key_types]
         self.variant_cb["values"] = [v.name for v in variants]
 
         if key_types:
-            symmetric_index = next((i for i, t in enumerate(key_types) if t.name == "symmetric"), 0)
-            self.type_cb.current(symmetric_index)
             self._sync_usage_cb()
         if variants:
             # preselect current variant from main window if possible
@@ -816,13 +817,13 @@ class _ImportKeyDialog(tk.Toplevel):
                 self.variant_cb.set(current.name)
             else:
                 self.variant_cb.current(0)
-            self._sync_type_from_variant()
+            self._on_variant_selected()
 
-    def _allowed_usages_for_type(self, type_name: str) -> list[models.KeyUsage]:
+    def _allowed_usages_for_type(self) -> list[models.KeyUsage]:
         return [u for u in self._usages if u.name == "file_encryption"]
 
     def _sync_usage_cb(self) -> None:
-        allowed_usages = self._allowed_usages_for_type(self.type_cb.get())
+        allowed_usages = self._allowed_usages_for_type()
         allowed_names = [u.name for u in allowed_usages]
         current_usage = self.usage_cb.get()
         self.usage_cb["values"] = allowed_names
@@ -834,26 +835,74 @@ class _ImportKeyDialog(tk.Toplevel):
         else:
             self.usage_cb.set("")
 
-    def _on_type_selected(self, _evt=None) -> None:
-        self._sync_usage_cb()
-
     def _variant_is_rsa(self, variant_name: str) -> bool:
         return variant_name.strip().upper().startswith("RSA")
 
-    def _sync_type_from_variant(self) -> None:
-        variant_name = self.variant_cb.get()
-        target_type = "asymmetric_private" if self._variant_is_rsa(variant_name) else "symmetric"
-        if target_type in self.type_cb["values"]:
-            self.type_cb.set(target_type)
-        self._sync_usage_cb()
+    def _type_name_for_variant(self, variant_name: str) -> str:
+        if self._variant_is_rsa(variant_name):
+            return "asymmetric_private"
+        return "symmetric"
+
+    def _set_material_mode(self) -> None:
+        is_rsa = self._variant_is_rsa(self.variant_cb.get())
+
+        self.symmetric_material_text.grid_remove()
+        self.public_key_label.grid_remove()
+        self.public_key_text.grid_remove()
+        self.private_key_label.grid_remove()
+        self.private_key_text.grid_remove()
+
+        if is_rsa:
+            self.material_label.configure(text="Pereche chei RSA")
+            self.hint_label.configure(
+                text="Pentru RSA trebuie sa ai ambele chei in aceeasi fereastra. Ori le generezi random pe ambele, ori le completezi pe ambele manual."
+            )
+            self.public_key_label.grid(row=0, column=0, sticky="w", pady=(0, 4))
+            self.public_key_text.grid(row=1, column=0, sticky="ew")
+            self.private_key_label.grid(row=2, column=0, sticky="w", pady=(10, 4))
+            self.private_key_text.grid(row=3, column=0, sticky="ew")
+        else:
+            self.material_label.configure(text="Material cheie (Base64)")
+            self.hint_label.configure(
+                text="Pentru AES folosesti un singur material Base64 sau il generezi random din buton."
+            )
+            self.symmetric_material_text.grid(row=0, column=0, sticky="ew")
 
     def _on_variant_selected(self, _evt=None) -> None:
-        self._sync_type_from_variant()
+        self._sync_usage_cb()
+        self._set_material_mode()
 
     def _material_format_for_variant(self, variant_name: str) -> str:
         if self._variant_is_rsa(variant_name):
             return "rsa-key-pair-json"
         return "raw"
+
+    def _decode_key_text_value(self, value: str) -> bytes:
+        stripped = value.strip()
+        if not stripped:
+            return b""
+        if "-----BEGIN" in stripped:
+            return stripped.encode("utf-8")
+        try:
+            return base64.b64decode(stripped, validate=True)
+        except Exception as exc:
+            raise ValueError("Valoarea trebuie sa fie PEM text sau Base64 valid.") from exc
+
+    def _build_rsa_material_b64(self) -> str:
+        public_value = self.public_key_text.get("1.0", tk.END).strip()
+        private_value = self.private_key_text.get("1.0", tk.END).strip()
+        if bool(public_value) != bool(private_value):
+            raise ValueError("Pentru RSA trebuie completate ambele chei: publica si privata.")
+        if not public_value:
+            raise ValueError("Pentru RSA trebuie sa generezi sau sa introduci atat cheia publica, cat si cheia privata.")
+
+        public_pem = self._decode_key_text_value(public_value)
+        private_pem = self._decode_key_text_value(private_value)
+        payload = {
+            "private_key_b64": base64.b64encode(private_pem).decode("ascii"),
+            "public_key_b64": base64.b64encode(public_pem).decode("ascii"),
+        }
+        return base64.b64encode(json.dumps(payload).encode("utf-8")).decode("ascii")
 
     def _generate_random_key(self) -> None:
         variant_name = self.variant_cb.get()
@@ -863,32 +912,46 @@ class _ImportKeyDialog(tk.Toplevel):
 
         with self.app.Session() as session:
             service = CryptoService(session=session)
-            algorithm = getattr(getattr(variant, "algorithm", None), "name", None)
-            if not algorithm:
-                algorithm_obj = session.get(models.Algorithm, variant.algorithm_id)
-                algorithm = algorithm_obj.name if algorithm_obj else None
+            algorithm_obj = session.get(models.Algorithm, variant.algorithm_id)
+            algorithm = algorithm_obj.name if algorithm_obj else None
             if not algorithm:
                 messagebox.showerror("KLM - import cheie", "Nu pot determina algoritmul pentru varianta selectata.", parent=self)
                 return
             material, _material_format = service._generate_key_material(str(algorithm).upper(), variant)
 
+        if self._variant_is_rsa(variant_name):
+            payload = json.loads(material.decode("utf-8"))
+            public_pem = base64.b64decode(payload["public_key_b64"]).decode("utf-8")
+            private_pem = base64.b64decode(payload["private_key_b64"]).decode("utf-8")
+            self.public_key_text.delete("1.0", tk.END)
+            self.public_key_text.insert("1.0", public_pem)
+            self.private_key_text.delete("1.0", tk.END)
+            self.private_key_text.insert("1.0", private_pem)
+            return
+
         material_b64 = base64.b64encode(material).decode("ascii")
-        self.material_text.delete("1.0", tk.END)
-        self.material_text.insert("1.0", material_b64)
+        self.symmetric_material_text.delete("1.0", tk.END)
+        self.symmetric_material_text.insert("1.0", material_b64)
 
     def _on_import(self) -> None:
         name = self.name_entry.get().strip()
         if not name:
             return
 
-        type_name = self.type_cb.get()
         usage_name = self.usage_cb.get()
         variant_name = self.variant_cb.get()
-        material_b64 = self.material_text.get("1.0", tk.END).strip()
-        if not material_b64:
+        try:
+            if self._variant_is_rsa(variant_name):
+                material_b64 = self._build_rsa_material_b64()
+            else:
+                material_b64 = self.symmetric_material_text.get("1.0", tk.END).strip()
+                if not material_b64:
+                    raise ValueError("Materialul cheii nu poate fi gol.")
+        except ValueError as exc:
+            messagebox.showerror("KLM - import cheie", str(exc), parent=self)
             return
 
-        key_type = next((t for t in self._key_types if t.name == type_name), None)
+        key_type = next((t for t in self._key_types if t.name == self._type_name_for_variant(variant_name)), None)
         usage = next((u for u in self._usages if u.name == usage_name), None)
         variant = next((v for v in self._variants if v.name == variant_name), None)
         if not key_type or not usage or not variant:
