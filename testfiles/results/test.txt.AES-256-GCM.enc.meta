@@ -1,1 +1,1 @@
-{"cipher": "aes-256-cbc", "iv": "076750123ef0a1f90b5e458c417e0442"}
+{"backend": "cryptography", "mode": "GCM", "iv": "afb610b32407ef252d56c4cc", "tag": "dd6065d8f6ccbf6ef79aa4cdbad84785", "original_name": "test.txt.txt", "original_suffix": ".txt", "algorithm_variant": "AES-256-GCM"}

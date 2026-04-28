@@ -13,6 +13,9 @@ from pathlib import Path
 from secrets import token_bytes
 from typing import Any
 
+from cryptography import __version__ as _CRYPTOGRAPHY_VERSION
+from cryptography.hazmat.primitives import padding
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -49,6 +52,8 @@ _MASTER_KEY_FILE_NAME = ".klm_master_key"
 # Provider identity
 _PROVIDER_NAME = "openssl"
 _PROVIDER_VERSION = "3"
+_CRYPTOGRAPHY_PROVIDER_NAME = "cryptography"
+_DEFAULT_FILE_BACKEND = "openssl"
 
 
 # ---------------------------------------------------------------------------
@@ -324,12 +329,20 @@ class CryptoService:
             raise ValueError(f"ResultType '{name}' not found in DB. Check seed data.")
         return rt
 
-    def _get_or_create_provider(self) -> models.CryptoProvider:
-        provider = self.providers.get_by_name(_PROVIDER_NAME)
+    def _provider_identity(self, backend: str) -> tuple[str, str]:
+        if backend == _CRYPTOGRAPHY_PROVIDER_NAME:
+            return _CRYPTOGRAPHY_PROVIDER_NAME, _CRYPTOGRAPHY_VERSION
+        if backend == _PROVIDER_NAME:
+            return _PROVIDER_NAME, _PROVIDER_VERSION
+        raise ValueError(f"Unsupported crypto backend '{backend}'.")
+
+    def _get_or_create_provider(self, backend: str = _PROVIDER_NAME) -> models.CryptoProvider:
+        provider_name, provider_version = self._provider_identity(backend)
+        provider = self.providers.get_by_name(provider_name)
         if not provider:
             provider = models.CryptoProvider(
-                name=_PROVIDER_NAME,
-                version=_PROVIDER_VERSION,
+                name=provider_name,
+                version=provider_version,
                 runtime_info={},
             )
             self.providers.add(provider)
@@ -372,7 +385,7 @@ class CryptoService:
 
         kt = self._require_key_type(key_type)
         ku = self._require_key_usage(usage)
-        provider = self._get_or_create_provider()
+        provider = self._get_or_create_provider(_PROVIDER_NAME)
         op_type = self._require_op_type("keygen")
         result_type_success = self._require_result_type("success")
         result_type_fail = self._require_result_type("fail")
@@ -434,20 +447,11 @@ class CryptoService:
     def _gen_aes_key(self, variant: models.AlgorithmVariant) -> bytes:
         """Generate random AES key bytes.
 
-        Variant name examples: AES-128, AES-192, AES-256, AES-256-GCM, AES-256-CBC.
+        Variant name examples: AES-128-CBC, AES-192-CBC, AES-256-CBC, AES-256-CTR.
         We extract the key size (128/192/256 bits) from the variant name or params.
         """
         # Try to read key size from variant params, fall back to parsing name
-        key_bits = variant.params.get("key_bits")
-        if not key_bits:
-            for part in variant.name.replace("-", " ").split():
-                if part.isdigit():
-                    key_bits = int(part)
-                    break
-        if not key_bits:
-            key_bits = 256  # sensible default
-
-        key_bytes_count = int(key_bits) // 8
+        key_bytes_count = self._key_bits_for_variant(variant) // 8
         # openssl rand -hex <n> returns hex string; we use binary output
         raw = _run(["openssl", "rand", str(key_bytes_count)])
         return raw
@@ -496,7 +500,9 @@ class CryptoService:
             raise ValueError(f"Key '{key_id}' is not active (status={key.status}).")
 
         variant = self._resolve_variant(key, algorithm_variant)
-        provider = self._get_or_create_provider()
+        operation_params = dict(params)
+        backend = self._select_file_backend(operation_params, variant=variant)
+        provider = self._get_or_create_provider(backend)
         op_type = self._require_op_type("encrypt")
         result_type_success = self._require_result_type("success")
         result_type_fail = self._require_result_type("fail")
@@ -525,7 +531,7 @@ class CryptoService:
             provider_id=provider.id,
             algorithm_variant_id=variant.id,
             key_id=key.id,
-            params=params,
+            params={**operation_params, "crypto_backend": backend},
             started_at=started_at,
             result_type_id=result_type_success.id,
         )
@@ -541,14 +547,26 @@ class CryptoService:
             out_dir = _results_dir_for_dir(base_dir)
             base_name = (original_path.stem if original_path else src.stem)
             out_name = f"{base_name}.{variant.name}.enc"
-            out_path = out_dir / out_name
+            out_path = self._next_available_artifact_path(
+                file_record.id,
+                encrypted_type.id,
+                out_dir / out_name,
+            )
 
-            # Run OpenSSL encryption
-            self._openssl_encrypt_file(
+            self._encrypt_file_with_backend(
+                backend=backend,
                 src=str(src),
                 dst=str(out_path),
                 key_bytes=key_bytes,
                 variant=variant,
+            )
+            self._merge_artifact_metadata(
+                str(out_path),
+                {
+                    "original_name": file_record.original_name,
+                    "original_suffix": Path(file_record.original_name).suffix,
+                    "algorithm_variant": variant.name,
+                },
             )
 
             elapsed_ms = (time.perf_counter() - t0) * 1000
@@ -596,11 +614,51 @@ class CryptoService:
             "-out", dst,
         ]
         _run(cmd)
-        # Store IV in variant params for later use (or pass via params dict)
-        # We embed IV into the output artifact path metadata via a sidecar file
-        meta_path = dst + ".meta"
-        with open(meta_path, "w") as f:
-            json.dump({"cipher": cipher, "iv": iv.hex()}, f)
+        self._write_artifact_metadata(dst, {"backend": _PROVIDER_NAME, "cipher": cipher, "iv": iv.hex()})
+
+    def _cryptography_encrypt_file(
+        self,
+        src: str,
+        dst: str,
+        key_bytes: bytes,
+        variant: models.AlgorithmVariant,
+    ) -> None:
+        plaintext = Path(src).read_bytes()
+        cipher, mode_name, iv = self._build_cryptography_cipher(key_bytes, variant)
+        encryptor = cipher.encryptor()
+
+        if mode_name == "CBC":
+            padder = padding.PKCS7(algorithms.AES.block_size).padder()
+            plaintext = padder.update(plaintext) + padder.finalize()
+
+        ciphertext = encryptor.update(plaintext) + encryptor.finalize()
+        Path(dst).write_bytes(ciphertext)
+
+        meta = {
+            "backend": _CRYPTOGRAPHY_PROVIDER_NAME,
+            "mode": mode_name,
+            "iv": iv.hex(),
+        }
+        if mode_name == "GCM":
+            meta["tag"] = encryptor.tag.hex()
+        self._write_artifact_metadata(dst, meta)
+
+    def _encrypt_file_with_backend(
+        self,
+        *,
+        backend: str,
+        src: str,
+        dst: str,
+        key_bytes: bytes,
+        variant: models.AlgorithmVariant,
+    ) -> None:
+        if backend == _PROVIDER_NAME:
+            self._openssl_encrypt_file(src=src, dst=dst, key_bytes=key_bytes, variant=variant)
+            return
+        if backend == _CRYPTOGRAPHY_PROVIDER_NAME:
+            self._cryptography_encrypt_file(src=src, dst=dst, key_bytes=key_bytes, variant=variant)
+            return
+        raise ValueError(f"Unsupported crypto backend '{backend}'.")
 
     # ------------------------------------------------------------------
     # decrypt_file
@@ -629,7 +687,10 @@ class CryptoService:
         if not variant:
             raise ValueError("Could not resolve AlgorithmVariant for key.")
 
-        provider = self._get_or_create_provider()
+        enc_path = Path(artifact.path)
+        meta = self._read_artifact_metadata(str(enc_path))
+        backend = self._select_file_backend(params, variant=variant, metadata_backend=meta.get("backend"))
+        provider = self._get_or_create_provider(backend)
         op_type = self._require_op_type("decrypt")
         result_type_success = self._require_result_type("success")
         result_type_fail = self._require_result_type("fail")
@@ -645,7 +706,7 @@ class CryptoService:
             provider_id=provider.id,
             algorithm_variant_id=variant.id,
             key_id=key.id,
-            params=params,
+            params={**params, "crypto_backend": backend},
             started_at=started_at,
             result_type_id=result_type_success.id,
         )
@@ -655,23 +716,6 @@ class CryptoService:
         try:
             key_bytes = self._get_key_bytes(key)
 
-            enc_path = Path(artifact.path)
-            meta_path = str(enc_path) + ".meta"
-            if not Path(meta_path).exists():
-                raise RuntimeError(f"Metadata file not found: {meta_path}")
-
-            with open(meta_path) as f:
-                meta = json.load(f)
-
-            try:
-                cipher = meta["cipher"]
-                iv_hex = meta["iv"]
-            except KeyError as exc:
-                missing = exc.args[0] if exc.args else "<unknown>"
-                raise RuntimeError(f"Metadata file missing '{missing}': {meta_path}") from exc
-
-            iv = bytes.fromhex(iv_hex)
-
             original_path = self._find_original_decrypted_path(artifact.file_id)
             base_dir = (original_path.parent if original_path else enc_path.resolve().parent)
             out_dir = _results_dir_for_dir(base_dir)
@@ -680,19 +724,22 @@ class CryptoService:
             if original_path:
                 out_name = f"{original_path.stem}.decrypted{original_path.suffix}"
             else:
-                out_name = f"{enc_path.stem}.decrypted"
+                out_name = self._decrypted_output_name(enc_path=enc_path, meta=meta)
 
-            out_path = out_dir / out_name
+            out_path = self._next_available_artifact_path(
+                artifact.file_id,
+                decrypted_type.id,
+                out_dir / out_name,
+            )
 
-            cmd = [
-                "openssl", "enc", f"-{cipher}", "-d",
-                "-K", key_bytes.hex(),
-                "-iv", iv.hex(),
-                "-nosalt",
-                "-in", str(enc_path),
-                "-out", str(out_path),
-            ]
-            _run(cmd)
+            self._decrypt_file_with_backend(
+                backend=backend,
+                src=str(enc_path),
+                dst=str(out_path),
+                key_bytes=key_bytes,
+                variant=variant,
+                meta=meta,
+            )
 
             elapsed_ms = (time.perf_counter() - t0) * 1000
             dec_hash = _sha256_file(str(out_path))
@@ -740,40 +787,248 @@ class CryptoService:
 
         return base_variant
 
+    def _requested_backend(self, params: dict[str, Any]) -> str | None:
+        raw = params.get("crypto_backend") or params.get("backend")
+        if raw is None:
+            return None
+        value = str(raw).strip().lower()
+        if not value or value == "auto":
+            return None
+        if value not in {_PROVIDER_NAME, _CRYPTOGRAPHY_PROVIDER_NAME}:
+            raise ValueError(f"Unsupported crypto backend '{raw}'.")
+        return value
+
+    def _select_file_backend(
+        self,
+        params: dict[str, Any],
+        *,
+        variant: models.AlgorithmVariant,
+        metadata_backend: str | None = None,
+    ) -> str:
+        requested = self._requested_backend(params)
+        if metadata_backend:
+            stored = self._requested_backend({"crypto_backend": metadata_backend}) or _DEFAULT_FILE_BACKEND
+            if requested and requested != stored:
+                raise ValueError(
+                    f"Encrypted artifact was created with backend '{stored}', not '{requested}'."
+                )
+            return stored
+        if requested:
+            return requested
+        mode_name = self._variant_mode_name(variant)
+        if mode_name in {"GCM", "CCM"}:
+            return _CRYPTOGRAPHY_PROVIDER_NAME
+        return _DEFAULT_FILE_BACKEND
+
+    def _key_bits_for_variant(self, variant: models.AlgorithmVariant) -> int:
+        key_bits = variant.params.get("key_bits")
+        if not key_bits:
+            for part in variant.name.replace("-", " ").split():
+                if part.isdigit():
+                    key_bits = int(part)
+                    break
+        if not key_bits:
+            key_bits = 256
+        return int(key_bits)
+
+    def _variant_mode_name(self, variant: models.AlgorithmVariant) -> str:
+        name_upper = variant.name.upper()
+        if name_upper.startswith("RSA") or " RSA" in name_upper:
+            raise NotImplementedError("encrypt/decrypt is not supported for RSA file variants.")
+
+        for mode_name in ("GCM", "CCM", "CTR", "CBC"):
+            if name_upper.endswith(f"-{mode_name}"):
+                return mode_name
+
+        mode_name = str(variant.params.get("mode", "CBC")).upper()
+        if mode_name in {"CBC", "CTR", "GCM", "CCM"}:
+            return mode_name
+        raise NotImplementedError(f"Unsupported AES mode '{mode_name}' for variant '{variant.name}'.")
+
     def _cipher_and_iv_for_variant(
         self, variant: models.AlgorithmVariant
     ) -> tuple[str, bytes]:
         """Map variant name to an OpenSSL cipher string and generate a fresh IV."""
-        name_upper = variant.name.upper()
+        mode_name = self._variant_mode_name(variant)
+        key_bits = self._key_bits_for_variant(variant)
 
-        # This service uses `openssl enc` (symmetric). Refuse RSA variants early.
-        if name_upper.startswith("RSA") or " RSA" in name_upper:
-            raise NotImplementedError("encrypt/decrypt via openssl enc is not supported for RSA variants.")
+        if mode_name in {"GCM", "CCM"}:
+            raise NotImplementedError(
+                f"Variant '{variant.name}' is not supported by 'openssl enc' because AEAD ciphers are not available there. "
+                "Use CBC/CTR variants or switch to a different crypto backend for GCM/CCM."
+            )
 
-        # Map to OpenSSL cipher name
-        cipher_map = {
-            "AES-256-GCM": "aes-256-cbc",   # OpenSSL CLI doesn't support GCM directly; use CBC fallback
-            "AES-256-CBC": "aes-256-cbc",
-            "AES-128-CBC": "aes-128-cbc",
-            "AES-192-CBC": "aes-192-cbc",
-            "AES-256-CTR": "aes-256-ctr",
-            "AES-128-GCM": "aes-128-cbc",
-        }
-        cipher = cipher_map.get(name_upper)
-        if not cipher:
-            # Try to derive from variant params or use a safe default
-            cipher = variant.params.get("openssl_cipher", "aes-256-cbc")
+        if mode_name not in {"CBC", "CTR"}:
+            raise NotImplementedError(f"Variant '{variant.name}' is not supported by 'openssl enc'.")
 
-        # Determine IV size based on the *actual cipher* chosen.
-        # GCM/CCM typically use 12-byte nonce, CBC/CTR use 16-byte IV.
+        cipher = str(variant.params.get("openssl_cipher", f"aes-{key_bits}-{mode_name.lower()}"))
+
         cipher_upper = cipher.upper()
         if cipher_upper.endswith("-GCM") or cipher_upper.endswith("-CCM"):
-            iv_size = 12
-        else:
-            iv_size = 16
+            raise NotImplementedError(
+                f"OpenSSL cipher '{cipher}' is AEAD and is not supported through 'openssl enc'."
+            )
 
+        # Determine IV size based on the *actual cipher* chosen.
+        # CBC/CTR use a 16-byte IV for AES.
+        iv_size = 16
         iv = os.urandom(iv_size)
         return cipher, iv
+
+    def _build_cryptography_cipher(
+        self,
+        key_bytes: bytes,
+        variant: models.AlgorithmVariant,
+        *,
+        iv: bytes | None = None,
+        tag: bytes | None = None,
+    ) -> tuple[Cipher, str, bytes]:
+        mode_name = self._variant_mode_name(variant)
+        key_bits = self._key_bits_for_variant(variant)
+        expected_key_len = key_bits // 8
+        if len(key_bytes) != expected_key_len:
+            raise ValueError(
+                f"Key length mismatch for variant '{variant.name}': expected {expected_key_len} bytes, got {len(key_bytes)}."
+            )
+
+        if mode_name in {"CBC", "CTR"}:
+            iv = iv or os.urandom(16)
+        elif mode_name == "GCM":
+            iv = iv or os.urandom(12)
+        else:
+            raise NotImplementedError(
+                f"Variant '{variant.name}' is not supported by the cryptography backend."
+            )
+
+        algorithm = algorithms.AES(key_bytes)
+        if mode_name == "CBC":
+            mode = modes.CBC(iv)
+        elif mode_name == "CTR":
+            mode = modes.CTR(iv)
+        else:
+            mode = modes.GCM(iv, tag) if tag is not None else modes.GCM(iv)
+        return Cipher(algorithm, mode), mode_name, iv
+
+    def _openssl_decrypt_file(
+        self,
+        *,
+        src: str,
+        dst: str,
+        key_bytes: bytes,
+        meta: dict[str, Any],
+    ) -> None:
+        try:
+            cipher = meta["cipher"]
+            iv_hex = meta["iv"]
+        except KeyError as exc:
+            missing = exc.args[0] if exc.args else "<unknown>"
+            raise RuntimeError(f"Metadata file missing '{missing}' for '{src}.meta'.") from exc
+
+        iv = bytes.fromhex(iv_hex)
+        cmd = [
+            "openssl", "enc", f"-{cipher}", "-d",
+            "-K", key_bytes.hex(),
+            "-iv", iv.hex(),
+            "-nosalt",
+            "-in", src,
+            "-out", dst,
+        ]
+        _run(cmd)
+
+    def _cryptography_decrypt_file(
+        self,
+        *,
+        src: str,
+        dst: str,
+        key_bytes: bytes,
+        variant: models.AlgorithmVariant,
+        meta: dict[str, Any],
+    ) -> None:
+        try:
+            iv = bytes.fromhex(meta["iv"])
+        except KeyError as exc:
+            missing = exc.args[0] if exc.args else "<unknown>"
+            raise RuntimeError(f"Metadata file missing '{missing}' for '{src}.meta'.") from exc
+
+        tag_hex = meta.get("tag")
+        tag = bytes.fromhex(tag_hex) if tag_hex else None
+        cipher, mode_name, _ = self._build_cryptography_cipher(key_bytes, variant, iv=iv, tag=tag)
+        ciphertext = Path(src).read_bytes()
+        decryptor = cipher.decryptor()
+        plaintext = decryptor.update(ciphertext) + decryptor.finalize()
+
+        if mode_name == "CBC":
+            unpadder = padding.PKCS7(algorithms.AES.block_size).unpadder()
+            plaintext = unpadder.update(plaintext) + unpadder.finalize()
+
+        Path(dst).write_bytes(plaintext)
+
+    def _decrypt_file_with_backend(
+        self,
+        *,
+        backend: str,
+        src: str,
+        dst: str,
+        key_bytes: bytes,
+        variant: models.AlgorithmVariant,
+        meta: dict[str, Any],
+    ) -> None:
+        if backend == _PROVIDER_NAME:
+            self._openssl_decrypt_file(src=src, dst=dst, key_bytes=key_bytes, meta=meta)
+            return
+        if backend == _CRYPTOGRAPHY_PROVIDER_NAME:
+            self._cryptography_decrypt_file(
+                src=src,
+                dst=dst,
+                key_bytes=key_bytes,
+                variant=variant,
+                meta=meta,
+            )
+            return
+        raise ValueError(f"Unsupported crypto backend '{backend}'.")
+
+    def _next_available_artifact_path(
+        self,
+        file_id: uuid.UUID,
+        artifact_type_id: uuid.UUID,
+        preferred_path: Path,
+    ) -> Path:
+        candidate = preferred_path
+        counter = 2
+        while candidate.exists() or self.file_artifacts.get_by_file_type_path(
+            file_id,
+            artifact_type_id,
+            str(candidate),
+        ):
+            candidate = preferred_path.with_name(
+                f"{preferred_path.stem}-{counter}{preferred_path.suffix}"
+            )
+            counter += 1
+        return candidate
+
+    def _decrypted_output_name(self, *, enc_path: Path, meta: dict[str, Any]) -> str:
+        original_name = meta.get("original_name")
+        if original_name:
+            original_path = Path(str(original_name))
+            suffix = original_path.suffix
+            stem = original_path.stem
+            return f"{stem}.decrypted{suffix}"
+        return f"{enc_path.stem}.decrypted"
+
+    def _write_artifact_metadata(self, path: str, metadata: dict[str, Any]) -> None:
+        meta_path = Path(path + ".meta")
+        meta_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    def _merge_artifact_metadata(self, path: str, extra_metadata: dict[str, Any]) -> None:
+        metadata = self._read_artifact_metadata(path)
+        metadata.update(extra_metadata)
+        self._write_artifact_metadata(path, metadata)
+
+    def _read_artifact_metadata(self, path: str) -> dict[str, Any]:
+        meta_path = Path(path + ".meta")
+        if not meta_path.exists():
+            raise RuntimeError(f"Metadata file not found: {meta_path}")
+        return json.loads(meta_path.read_text(encoding="utf-8"))
 
     def _get_or_create_file(
         self, src: Path, original_hash: str, original_size: int

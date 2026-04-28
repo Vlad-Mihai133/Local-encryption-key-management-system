@@ -3,8 +3,28 @@ from __future__ import annotations
 import argparse
 import uuid
 
+from sqlalchemy import select
+
 from klm.db.session import create_db_engine, create_session_factory
 from klm.services.crypto_service import CryptoService
+
+
+def _provider_label(session, operation_id: uuid.UUID) -> str:
+    from klm.db import models
+
+    operation = session.get(models.CryptoOperation, operation_id)
+    if not operation:
+        return "provider necunoscut"
+
+    provider = session.get(models.CryptoProvider, operation.provider_id)
+    backend = operation.params.get("crypto_backend", "-")
+    if not provider:
+        return f"backend={backend}"
+
+    provider_label = provider.name
+    if provider.version:
+        provider_label = f"{provider_label} {provider.version}"
+    return f"provider={provider_label}, backend={backend}"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -45,10 +65,12 @@ def build_parser() -> argparse.ArgumentParser:
     enc.add_argument("--file", required=True)
     enc.add_argument("--key-id", required=True)
     enc.add_argument("--variant", required=True, help="algorithm variant name")
+    enc.add_argument("--backend", default="auto", help="auto | openssl | cryptography")
 
     dec = sub.add_parser("decrypt", help="Decrypt an artifact")
     dec.add_argument("--artifact-id", required=True)
     dec.add_argument("--key-id", required=True)
+    dec.add_argument("--backend", default="auto", help="auto | openssl | cryptography")
 
     artifact_update = sub.add_parser("artifact-update", help="Update artifact path")
     artifact_update.add_argument("--artifact-id", required=True)
@@ -165,20 +187,34 @@ def main(argv: list[str] | None = None) -> int:
                     file_path=args.file,
                     key_id=uuid.UUID(args.key_id),
                     algorithm_variant=args.variant,
-                    params={},
+                    params={"crypto_backend": args.backend},
                 )
                 session.commit()
-                print(f"Encrypted artifact created: {artifact_id}")
+                from klm.db import models
+                operation = session.scalar(
+                    select(models.CryptoOperation)
+                    .where(models.CryptoOperation.output_artifact_id == artifact_id)
+                    .order_by(models.CryptoOperation.started_at.desc())
+                )
+                details = _provider_label(session, operation.id) if operation else f"backend={args.backend}"
+                print(f"Encrypted artifact created: {artifact_id} ({details})")
                 return 0
 
             if args.command == "decrypt":
                 artifact_id = service.decrypt_file(
                     artifact_id=uuid.UUID(args.artifact_id),
                     key_id=uuid.UUID(args.key_id),
-                    params={},
+                    params={"crypto_backend": args.backend},
                 )
                 session.commit()
-                print(f"Decrypted artifact created: {artifact_id}")
+                from klm.db import models
+                operation = session.scalar(
+                    select(models.CryptoOperation)
+                    .where(models.CryptoOperation.output_artifact_id == artifact_id)
+                    .order_by(models.CryptoOperation.started_at.desc())
+                )
+                details = _provider_label(session, operation.id) if operation else f"backend={args.backend}"
+                print(f"Decrypted artifact created: {artifact_id} ({details})")
                 return 0
 
             parser.error(f"Unknown command: {args.command}")

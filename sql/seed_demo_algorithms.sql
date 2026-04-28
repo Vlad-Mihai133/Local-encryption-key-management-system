@@ -23,12 +23,21 @@ WHERE NOT EXISTS (SELECT 1 FROM algorithms WHERE name = 'RSA');
 
 -- Variants for AES
 INSERT INTO algorithm_variants (algorithm_id, name, params)
-SELECT a.id, 'AES-256-GCM', '{}'::jsonb
+SELECT a.id, 'AES-128-CBC', '{}'::jsonb
 FROM algorithms a
 WHERE a.name = 'AES'
   AND NOT EXISTS (
       SELECT 1 FROM algorithm_variants av
-      WHERE av.algorithm_id = a.id AND av.name = 'AES-256-GCM'
+      WHERE av.algorithm_id = a.id AND av.name = 'AES-128-CBC'
+  );
+
+INSERT INTO algorithm_variants (algorithm_id, name, params)
+SELECT a.id, 'AES-192-CBC', '{}'::jsonb
+FROM algorithms a
+WHERE a.name = 'AES'
+  AND NOT EXISTS (
+      SELECT 1 FROM algorithm_variants av
+      WHERE av.algorithm_id = a.id AND av.name = 'AES-192-CBC'
   );
 
 INSERT INTO algorithm_variants (algorithm_id, name, params)
@@ -38,6 +47,15 @@ WHERE a.name = 'AES'
   AND NOT EXISTS (
       SELECT 1 FROM algorithm_variants av
       WHERE av.algorithm_id = a.id AND av.name = 'AES-256-CBC'
+  );
+
+INSERT INTO algorithm_variants (algorithm_id, name, params)
+SELECT a.id, 'AES-256-CTR', '{}'::jsonb
+FROM algorithms a
+WHERE a.name = 'AES'
+  AND NOT EXISTS (
+      SELECT 1 FROM algorithm_variants av
+      WHERE av.algorithm_id = a.id AND av.name = 'AES-256-CTR'
   );
 
 -- Variants for RSA

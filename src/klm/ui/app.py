@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import os
 import uuid
 from dataclasses import dataclass
@@ -53,6 +54,13 @@ def _get_or_create_by_name(session, model_cls, name: str):
     return obj
 
 
+def _load_artifact_metadata(path: Path) -> dict[str, object]:
+    meta_path = Path(str(path) + ".meta")
+    if not meta_path.exists():
+        raise FileNotFoundError(str(meta_path))
+    return json.loads(meta_path.read_text(encoding="utf-8"))
+
+
 class KLMApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
@@ -102,9 +110,15 @@ class KLMApp(tk.Tk):
         self.key_cb.grid(row=2, column=1, sticky="ew", pady=6)
         self.key_cb.bind("<<ComboboxSelected>>", self._on_key_selected)
 
-        ttk.Label(form, text="Fisier").grid(row=3, column=0, sticky="w", padx=(0, 10), pady=6)
+        ttk.Label(form, text="Backend").grid(row=3, column=0, sticky="w", padx=(0, 10), pady=6)
+        self.backend_cb = ttk.Combobox(form, state="readonly", values=["auto", "openssl", "cryptography"])
+        self.backend_cb.grid(row=3, column=1, sticky="ew", pady=6)
+        self.backend_cb.set("auto")
+        self.backend_cb.bind("<<ComboboxSelected>>", lambda _evt: self._render_details())
+
+        ttk.Label(form, text="Fisier").grid(row=4, column=0, sticky="w", padx=(0, 10), pady=6)
         self.file_cb = ttk.Combobox(form, state="readonly")
-        self.file_cb.grid(row=3, column=1, sticky="ew", pady=6)
+        self.file_cb.grid(row=4, column=1, sticky="ew", pady=6)
         self.file_cb.bind("<<ComboboxSelected>>", self._on_file_selected)
 
         buttons = ttk.Frame(root)
@@ -113,6 +127,7 @@ class KLMApp(tk.Tk):
         ttk.Button(buttons, text="Refresh", command=self.refresh).pack(side=tk.LEFT)
         ttk.Button(buttons, text="Adauga fisier...", command=self.add_file).pack(side=tk.LEFT, padx=8)
         ttk.Button(buttons, text="Import cheie...", command=self.import_key).pack(side=tk.LEFT)
+        ttk.Button(buttons, text="Debug cheie...", command=self.debug_selected_key).pack(side=tk.LEFT, padx=8)
         ttk.Button(buttons, text="Encrypt", command=self.encrypt_selected).pack(side=tk.LEFT, padx=8)
         ttk.Button(buttons, text="Decrypt", command=self.decrypt_selected).pack(side=tk.LEFT)
 
@@ -148,6 +163,7 @@ class KLMApp(tk.Tk):
         self._update_variant_cb()
         self._update_key_cb()
         self._update_file_cb()
+        self._sync_backend_cb()
         self._render_details()
         self._set_status("Incarcat din DB.")
 
@@ -166,6 +182,19 @@ class KLMApp(tk.Tk):
                 )
                 .order_by(models.FileArtifact.created_at.desc())
             )
+            return session.scalar(stmt)
+
+    def _latest_operation_for_selection(self) -> models.CryptoOperation | None:
+        with self.Session() as session:
+            stmt = select(models.CryptoOperation)
+            if self.selected_file is not None:
+                stmt = stmt.where(models.CryptoOperation.file_id == self.selected_file.id)
+            elif self.selected_key is not None:
+                stmt = stmt.where(models.CryptoOperation.key_id == self.selected_key.id)
+            else:
+                return None
+
+            stmt = stmt.order_by(models.CryptoOperation.started_at.desc())
             return session.scalar(stmt)
 
     def encrypt_selected(self) -> None:
@@ -196,6 +225,7 @@ class KLMApp(tk.Tk):
                     key_id=self.selected_key.id,
                     algorithm_variant=self.selected_variant.name,
                     params={
+                        "crypto_backend": self.backend_cb.get(),
                         "file_id": str(self.selected_file.id),
                         "algorithm_variant_id": str(self.selected_variant.id),
                         "input_artifact_id": str(input_artifact.id),
@@ -234,6 +264,7 @@ class KLMApp(tk.Tk):
                     artifact_id=input_artifact.id,
                     key_id=self.selected_key.id,
                     params={
+                        "crypto_backend": self.backend_cb.get(),
                         **({"algorithm_variant_id": str(self.selected_variant.id)} if self.selected_variant else {}),
                     },
                 )
@@ -273,7 +304,31 @@ class KLMApp(tk.Tk):
                 self.variant_cb.current(0)
             else:
                 self.variant_cb.set("")
+        self._sync_backend_cb()
         self._update_key_cb()
+
+    def _allowed_backends_for_variant(self) -> list[str]:
+        if not self.selected_variant:
+            return ["auto", "openssl", "cryptography"]
+
+        variant_name = self.selected_variant.name.upper()
+        if variant_name.endswith("-GCM") or variant_name.endswith("-CCM"):
+            return ["auto", "cryptography"]
+        return ["auto", "openssl", "cryptography"]
+
+    def _sync_backend_cb(self) -> None:
+        allowed = self._allowed_backends_for_variant()
+        current = self.backend_cb.get() if hasattr(self, "backend_cb") else "auto"
+        self.backend_cb["values"] = allowed
+        if current not in allowed:
+            replacement = "cryptography" if "cryptography" in allowed and "openssl" not in allowed else "auto"
+            self.backend_cb.set(replacement)
+            if self.selected_variant:
+                self._set_status(
+                    f"Backend ajustat automat la '{replacement}' pentru varianta {self.selected_variant.name}."
+                )
+        elif not current:
+            self.backend_cb.set("auto")
 
     def _filtered_keys(self) -> list[models.Key]:
         if not self.selected_variant:
@@ -318,6 +373,7 @@ class KLMApp(tk.Tk):
         variants = self._filtered_variants()
         self.selected_variant = next((v for v in variants if v.name == name), None)
         self.selected_key = None
+        self._sync_backend_cb()
         self._update_key_cb()
         self._render_details()
 
@@ -331,6 +387,12 @@ class KLMApp(tk.Tk):
         name = self.file_cb.get()
         self.selected_file = next((f for f in self.files if f.name == name), None)
         self._render_details()
+
+    def debug_selected_key(self) -> None:
+        if not self.selected_key:
+            messagebox.showerror("KLM", "Selecteaza o cheie.")
+            return
+        _DebugKeyDialog(self, self.selected_key.id)
 
     def _render_details(self) -> None:
         parts: list[str] = []
@@ -346,6 +408,13 @@ class KLMApp(tk.Tk):
 
         if self.selected_key:
             parts.append(f"Cheie: {self.selected_key.name} ({self.selected_key.id})")
+            parts.append(f"  status: {self.selected_key.status}")
+            parts.append(f"  format material: {self.selected_key.material_format}")
+            parts.append(f"  schema stocare: {self.selected_key.encryption_scheme}")
+            parts.append(f"  creata la: {self.selected_key.created_at}")
+            parts.append(f"  expira la: {self.selected_key.expires_at or '-'}")
+            parts.append(f"  params criptare: {self.selected_key.encryption_params}")
+            parts.append("  material cheie: ascuns in panoul principal; foloseste 'Debug cheie...'")
         else:
             parts.append("Cheie: -")
 
@@ -353,6 +422,34 @@ class KLMApp(tk.Tk):
             parts.append(f"Fisier: {self.selected_file.name} ({self.selected_file.id})")
         else:
             parts.append("Fisier: -")
+
+        backend = self.backend_cb.get() if hasattr(self, "backend_cb") else "auto"
+        parts.append(f"Backend selectat: {backend}")
+        if self.selected_variant:
+            allowed = ", ".join(self._allowed_backends_for_variant())
+            parts.append(f"Backend-uri permise pentru varianta curenta: {allowed}")
+
+        latest_operation = self._latest_operation_for_selection()
+        if latest_operation:
+            with self.Session() as session:
+                provider = session.get(models.CryptoProvider, latest_operation.provider_id)
+                result = session.get(models.ResultType, latest_operation.result_type_id)
+                op_type = session.get(models.CryptoOperationType, latest_operation.operation_type_id)
+
+            provider_label = provider.name if provider else str(latest_operation.provider_id)
+            if provider and provider.version:
+                provider_label = f"{provider_label} {provider.version}"
+
+            operation_backend = latest_operation.params.get("crypto_backend", "-")
+            parts.append("Ultima operatie relevanta:")
+            parts.append(f"  tip: {op_type.name if op_type else latest_operation.operation_type_id}")
+            parts.append(f"  provider: {provider_label}")
+            parts.append(f"  backend: {operation_backend}")
+            parts.append(f"  rezultat: {result.name if result else latest_operation.result_type_id}")
+            parts.append(f"  start: {latest_operation.started_at}")
+            parts.append(f"  end: {latest_operation.ended_at or '-'}")
+        else:
+            parts.append("Ultima operatie relevanta: -")
 
         self._set_details("\n".join(parts))
 
@@ -362,13 +459,30 @@ class KLMApp(tk.Tk):
             return
 
         p = Path(path)
-        original_name = p.name
         size_bytes = os.path.getsize(path)
         digest = _sha256_file(path)
+        artifact_type_name = "decrypted"
+        original_name = p.name
+        base_name = p.stem
+
+        if p.suffix.lower() == ".enc":
+            try:
+                meta = _load_artifact_metadata(p)
+            except FileNotFoundError:
+                self._set_status(
+                    f"Eroare: pentru fisierul criptat '{p.name}' lipseste sidecar-ul .meta necesar la decrypt."
+                )
+                return
+            except json.JSONDecodeError as exc:
+                self._set_status(f"Eroare: fisierul .meta pentru '{p.name}' nu este JSON valid: {exc}")
+                return
+
+            artifact_type_name = "encrypted"
+            original_name = str(meta.get("original_name") or p.stem)
+            base_name = Path(original_name).stem or p.stem
 
         with self.Session() as session:
             existing_names = set(session.scalars(select(models.File.name)))
-            base_name = p.stem
             name = _unique_name(existing_names, base_name)
 
             file_row = models.File(
@@ -380,7 +494,7 @@ class KLMApp(tk.Tk):
             session.add(file_row)
             session.flush()
 
-            artifact_type = _get_or_create_by_name(session, models.ArtifactType, "decrypted")
+            artifact_type = _get_or_create_by_name(session, models.ArtifactType, artifact_type_name)
             artifact = models.FileArtifact(
                 file_id=file_row.id,
                 artifact_type_id=artifact_type.id,
@@ -392,7 +506,7 @@ class KLMApp(tk.Tk):
             session.commit()
 
         self.refresh()
-        self._set_status(f"Fisier adaugat: {name}")
+        self._set_status(f"Fisier adaugat: {name} ({artifact_type_name})")
 
     def import_key(self) -> None:
         dialog = _ImportKeyDialog(self)
@@ -454,6 +568,150 @@ class ImportKeyPayload:
     usage_id: uuid.UUID
     variant_id: uuid.UUID
     encrypted_material_b64: str
+
+
+class _DebugKeyDialog(tk.Toplevel):
+    def __init__(self, app: KLMApp, key_id: uuid.UUID) -> None:
+        super().__init__(app)
+        self.app = app
+        self.key_id = key_id
+
+        self.title("Debug cheie")
+        self.geometry("760x620")
+        self.minsize(720, 520)
+
+        root = ttk.Frame(self, padding=12)
+        root.pack(fill=tk.BOTH, expand=True)
+        root.columnconfigure(0, weight=1)
+        root.rowconfigure(2, weight=1)
+
+        header = ttk.Label(
+            root,
+            text="Inspectare cheie selectata",
+            font=("Segoe UI", 12, "bold"),
+        )
+        header.grid(row=0, column=0, sticky="w")
+
+        info = ttk.Label(
+            root,
+            text=(
+                "Debug only: materialul cheii nu este afisat automat. "
+                "Apasa butonul de mai jos pentru a-l obtine temporar din DB."
+            ),
+            wraplength=700,
+            justify="left",
+        )
+        info.grid(row=1, column=0, sticky="ew", pady=(8, 10))
+
+        panes = ttk.Panedwindow(root, orient=tk.VERTICAL)
+        panes.grid(row=2, column=0, sticky="nsew")
+
+        meta_frame = ttk.Labelframe(panes, text="Metadate cheie", padding=10)
+        panes.add(meta_frame, weight=1)
+        meta_frame.columnconfigure(0, weight=1)
+
+        self.meta_text = tk.Text(meta_frame, height=13, wrap="word")
+        self.meta_text.pack(fill=tk.BOTH, expand=True)
+        self.meta_text.configure(state="disabled")
+
+        material_frame = ttk.Labelframe(panes, text="Material cheie", padding=10)
+        panes.add(material_frame, weight=1)
+        material_frame.columnconfigure(0, weight=1)
+
+        actions = ttk.Frame(material_frame)
+        actions.pack(fill=tk.X, pady=(0, 8))
+        ttk.Button(actions, text="Obtine materialul cheii", command=self._load_material).pack(side=tk.LEFT)
+        ttk.Button(actions, text="Copiaza Base64", command=self._copy_base64).pack(side=tk.LEFT, padx=8)
+
+        self.material_text = tk.Text(material_frame, height=16, wrap="word")
+        self.material_text.pack(fill=tk.BOTH, expand=True)
+        self.material_text.configure(state="disabled")
+
+        self._material_b64 = ""
+        self._render_metadata()
+
+        self.transient(app)
+        self.grab_set()
+
+    def _set_text(self, widget: tk.Text, value: str) -> None:
+        widget.configure(state="normal")
+        widget.delete("1.0", tk.END)
+        widget.insert(tk.END, value)
+        widget.configure(state="disabled")
+
+    def _render_metadata(self) -> None:
+        with self.app.Session() as session:
+            key = session.get(models.Key, self.key_id)
+            if not key:
+                self._set_text(self.meta_text, "Cheia nu mai exista in DB.")
+                return
+
+            key_type = session.get(models.KeyType, key.type_id)
+            usage = session.get(models.KeyUsage, key.usage_id)
+            variant = session.get(models.AlgorithmVariant, key.algorithm_id)
+            algorithm = session.get(models.Algorithm, variant.algorithm_id) if variant else None
+
+        parts = [
+            f"Nume: {key.name}",
+            f"ID: {key.id}",
+            f"Status: {key.status}",
+            f"Tip: {key_type.name if key_type else key.type_id}",
+            f"Usage: {usage.name if usage else key.usage_id}",
+            f"Algoritm: {algorithm.name if algorithm else '-'}",
+            f"Varianta: {variant.name if variant else key.algorithm_id}",
+            f"Creata la: {key.created_at}",
+            f"Expira la: {key.expires_at or '-'}",
+            f"Material format: {key.material_format}",
+            f"Encryption scheme: {key.encryption_scheme}",
+            f"Encryption params: {key.encryption_params}",
+            f"Ciphertext bytes in DB: {len(bytes(key.encrypted_material))}",
+        ]
+        self._set_text(self.meta_text, "\n".join(parts))
+
+    def _load_material(self) -> None:
+        with self.app.Session() as session:
+            key = session.get(models.Key, self.key_id)
+            if not key:
+                messagebox.showerror("KLM - debug cheie", "Cheia nu mai exista in DB.", parent=self)
+                return
+
+            service = CryptoService(session=session)
+            try:
+                material = service._get_key_bytes(key)
+            except Exception as exc:
+                messagebox.showerror("KLM - debug cheie", str(exc), parent=self)
+                return
+
+        self._material_b64 = base64.b64encode(material).decode("ascii")
+        hex_material = material.hex()
+        try:
+            utf8_preview = material.decode("utf-8")
+        except UnicodeDecodeError:
+            utf8_preview = "<non-UTF8 binary>"
+
+        rendered = "\n".join([
+            "Base64:",
+            self._material_b64,
+            "",
+            "Hex:",
+            hex_material,
+            "",
+            "UTF-8 preview:",
+            utf8_preview,
+        ])
+        self._set_text(self.material_text, rendered)
+
+    def _copy_base64(self) -> None:
+        if not self._material_b64:
+            messagebox.showinfo(
+                "KLM - debug cheie",
+                "Obtine mai intai materialul cheii pentru a-l copia.",
+                parent=self,
+            )
+            return
+        self.clipboard_clear()
+        self.clipboard_append(self._material_b64)
+        messagebox.showinfo("KLM - debug cheie", "Base64 copiat in clipboard.", parent=self)
 
 
 class _ImportKeyDialog(tk.Toplevel):

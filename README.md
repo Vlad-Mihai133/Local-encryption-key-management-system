@@ -2,8 +2,9 @@
 
 Sprint 1 deliverables:
 - Postgres schema (UUID primary keys)
-- SQLAlchemy entities + repository stubs
-- Placeholder service layer + CLI entrypoint
+- SQLAlchemy entities + repository layer
+- Crypto service for key generation, file encrypt/decrypt and key-material protection in DB
+- CLI and Tkinter UI for working with files, keys and backend selection
 
 DB schema lives in `sql/schema.sql`.
 
@@ -40,6 +41,12 @@ Seed demo (AES/RSA + cateva variante):
 psql -d klm -f .\sql\seed_demo_algorithms.sql
 ```
 
+Cleanup pentru variante demo legacy (daca ai seed-uit variante vechi precum `AES-256-GCM` si vrei sa le elimini in siguranta):
+
+```powershell
+psql -d klm -f .\sql\cleanup_legacy_demo_variants.sql
+```
+
 ### 3) Python environment
 
 Create a virtualenv with Python 3.11+:
@@ -54,9 +61,9 @@ pip install -r .\requirements.txt
 
 Copy `.env.example` to `.env` and set `DATABASE_URL`
 
-## Running (placeholder CLI)
+## Running (CLI)
 
-This sprint the CLI is intentionally a placeholder (commands raise `NotImplementedError`).
+CLI-ul poate rula operatii pentru artifacts, keygen, encrypt si decrypt.
 
 Because the project uses a `src/` layout, run with `PYTHONPATH=src`:
 
@@ -72,12 +79,22 @@ $env:PYTHONPATH = "src"
 python -m klm.cli --help
 ```
 
+Exemple pentru backend-ul de criptare al fisierelor:
+
+```powershell
+$env:PYTHONPATH = "src"
+python -m klm.cli encrypt --file .\testfiles\test.txt.txt --key-id <UUID> --variant AES-256-CBC --backend openssl
+python -m klm.cli encrypt --file .\testfiles\test.txt.txt --key-id <UUID> --variant AES-256-GCM --backend cryptography
+```
+
 ## UI grafic (desktop, Tkinter)
 
 UI-ul este o fereastra simpla pentru:
 - selectare algoritm -> varianta
+- selectare backend (`auto`, `openssl`, `cryptography`) pentru operatiile pe fisiere
 - selectare/adaugare cheie (import de `encrypted_material` in Base64)
 - selectare/adaugare fisier (browse + inregistrare in DB)
+- debug pentru cheia selectata (metadate + obtinere material cheie la cerere)
 
 Rulare:
 
@@ -97,5 +114,8 @@ Daca ai o baza de date veche (creata cu o schema unde `keys.algorithm_id` refera
 
 ## Notes
 
-- Key material is stored in the DB (ciphertext).
-- The encryption/decryption of key material is not implemented in Sprint 1; the future plan is documented in `src/klm/services/crypto_service.py`.
+- Key material is stored encrypted in the DB and is decrypted in the service layer when needed.
+- File encryption/decryption supports 2 backends: `openssl` and `cryptography`.
+- In UI si CLI poti alege backend-ul explicit sau poti lasa `auto`; pentru variante AEAD precum `AES-256-GCM`, `auto` foloseste `cryptography`.
+- Supported demo variants for file crypto are `AES-128-CBC`, `AES-192-CBC`, `AES-256-CBC`, `AES-256-CTR`.
+- AEAD variants like `AES-256-GCM` nu sunt expuse in demo seed-ul OpenSSL, dar sunt suportate prin backend-ul `cryptography` daca exista deja in DB sau daca adaugi astfel de variante.

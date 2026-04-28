@@ -6,3 +6,4 @@ cryptography
 python-dotenv
 psycopg[binary]
 sqlalchemy
+pytest>=8.0
