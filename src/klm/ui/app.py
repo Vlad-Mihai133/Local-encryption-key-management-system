@@ -735,6 +735,7 @@ class _ImportKeyDialog(tk.Toplevel):
         ttk.Label(root, text="Tip cheie").grid(row=1, column=0, sticky="w", padx=(0, 10), pady=6)
         self.type_cb = ttk.Combobox(root, state="readonly")
         self.type_cb.grid(row=1, column=1, sticky="ew", pady=6)
+        self.type_cb.bind("<<ComboboxSelected>>", self._on_type_selected)
 
         ttk.Label(root, text="Usage").grid(row=2, column=0, sticky="w", padx=(0, 10), pady=6)
         self.usage_cb = ttk.Combobox(root, state="readonly")
@@ -768,13 +769,11 @@ class _ImportKeyDialog(tk.Toplevel):
         self._variants = variants
 
         self.type_cb["values"] = [t.name for t in key_types]
-        self.usage_cb["values"] = [u.name for u in usages]
         self.variant_cb["values"] = [v.name for v in variants]
 
         if key_types:
             self.type_cb.current(0)
-        if usages:
-            self.usage_cb.current(0)
+            self._sync_usage_cb()
         if variants:
             # preselect current variant from main window if possible
             current = self.app.selected_variant
@@ -782,6 +781,33 @@ class _ImportKeyDialog(tk.Toplevel):
                 self.variant_cb.set(current.name)
             else:
                 self.variant_cb.current(0)
+
+    def _allowed_usages_for_type(self, type_name: str) -> list[models.KeyUsage]:
+        type_name = type_name.strip().lower()
+        if type_name == "symmetric":
+            return [u for u in self._usages if u.name == "file_encryption"]
+        if type_name == "asymmetric_private":
+            return [u for u in self._usages if u.name in {"signing", "key_wrapping"}]
+        if type_name == "asymmetric_public":
+            return [u for u in self._usages if u.name == "key_wrapping"]
+        return list(self._usages)
+
+    def _sync_usage_cb(self) -> None:
+        type_name = self.type_cb.get()
+        allowed_usages = self._allowed_usages_for_type(type_name) if type_name else list(self._usages)
+        allowed_names = [u.name for u in allowed_usages]
+        current_usage = self.usage_cb.get()
+        self.usage_cb["values"] = allowed_names
+
+        if current_usage in allowed_names:
+            self.usage_cb.set(current_usage)
+        elif allowed_names:
+            self.usage_cb.set(allowed_names[0])
+        else:
+            self.usage_cb.set("")
+
+    def _on_type_selected(self, _evt=None) -> None:
+        self._sync_usage_cb()
 
     def _on_import(self) -> None:
         name = self.name_entry.get().strip()

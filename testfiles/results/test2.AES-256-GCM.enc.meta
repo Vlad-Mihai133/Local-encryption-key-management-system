@@ -1,0 +1,1 @@
+{"backend": "cryptography", "mode": "GCM", "iv": "c1052640874e6e1e63bb3444", "tag": "a13fa9dda26a8bc1342daa8806028bfc", "original_name": "test2.txt", "original_suffix": ".txt", "algorithm_variant": "AES-256-GCM"}
