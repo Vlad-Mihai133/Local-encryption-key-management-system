@@ -58,6 +58,15 @@ WHERE a.name = 'AES'
       WHERE av.algorithm_id = a.id AND av.name = 'AES-256-CTR'
   );
 
+INSERT INTO algorithm_variants (algorithm_id, name, params)
+SELECT a.id, 'AES-256-GCM', '{}'::jsonb
+FROM algorithms a
+WHERE a.name = 'AES'
+  AND NOT EXISTS (
+      SELECT 1 FROM algorithm_variants av
+      WHERE av.algorithm_id = a.id AND av.name = 'AES-256-GCM'
+  );
+
 -- Variants for RSA
 INSERT INTO algorithm_variants (algorithm_id, name, params)
 SELECT a.id, 'RSA-2048', '{}'::jsonb

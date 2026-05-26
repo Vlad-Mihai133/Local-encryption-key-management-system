@@ -13,13 +13,12 @@ def test_seed_demo_algorithms_uses_supported_variants() -> None:
     assert "AES-192-CBC" in content
     assert "AES-256-CBC" in content
     assert "AES-256-CTR" in content
-    assert "AES-256-GCM" not in content
+    assert "AES-256-GCM" in content
 
 
 def test_cleanup_script_targets_legacy_demo_variants_safely() -> None:
     content = (PROJECT_ROOT / "sql" / "cleanup_legacy_demo_variants.sql").read_text(encoding="utf-8")
 
-    assert "AES-256-GCM" in content
     assert "AES-128-GCM" in content
     assert "crypto_operations" in content
     assert "keys" in content

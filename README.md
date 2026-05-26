@@ -41,7 +41,7 @@ Seed demo (AES/RSA + cateva variante):
 psql -d klm -f .\sql\seed_demo_algorithms.sql
 ```
 
-Cleanup pentru variante demo legacy (daca ai seed-uit variante vechi precum `AES-256-GCM` si vrei sa le elimini in siguranta):
+Cleanup pentru variante demo legacy (de exemplu `AES-128-GCM`, daca exista intr-o baza veche si vrei sa o elimini in siguranta):
 
 ```powershell
 psql -d klm -f .\sql\cleanup_legacy_demo_variants.sql
@@ -117,5 +117,5 @@ Daca ai o baza de date veche (creata cu o schema unde `keys.algorithm_id` refera
 - Key material is stored encrypted in the DB and is decrypted in the service layer when needed.
 - File encryption/decryption supports 2 backends: `openssl` and `cryptography`.
 - In UI si CLI poti alege backend-ul explicit sau poti lasa `auto`; pentru variante AEAD precum `AES-256-GCM`, `auto` foloseste `cryptography`.
-- Supported demo variants for file crypto are `AES-128-CBC`, `AES-192-CBC`, `AES-256-CBC`, `AES-256-CTR`.
-- AEAD variants like `AES-256-GCM` nu sunt expuse in demo seed-ul OpenSSL, dar sunt suportate prin backend-ul `cryptography` daca exista deja in DB sau daca adaugi astfel de variante.
+- Supported demo variants for file crypto are `AES-128-CBC`, `AES-192-CBC`, `AES-256-CBC`, `AES-256-CTR`, `AES-256-GCM`.
+- Varianta `AES-256-GCM` este expusa in seed-ul demo si foloseste backend-ul `cryptography`, deoarece `openssl enc` nu suporta fluxul AEAD necesar pentru GCM.

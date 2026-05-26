@@ -1,7 +1,7 @@
 -- Cleanup pentru variante demo legacy care nu mai sunt expuse de seed-ul curent.
 --
 -- Ce face:
--- 1) identifica variantele AEAD demo vechi (ex. AES-256-GCM / AES-128-GCM)
+-- 1) identifica variantele AEAD demo vechi care NU mai sunt seed-uite (ex. AES-128-GCM)
 -- 2) le sterge DOAR daca nu sunt referite din `keys` sau `crypto_operations`
 -- 3) afiseaza NOTICE pentru variantele pastrate din cauza referintelor existente
 
@@ -18,7 +18,7 @@ BEGIN
         FROM algorithm_variants av
         JOIN algorithms a ON a.id = av.algorithm_id
         WHERE a.name = 'AES'
-          AND av.name IN ('AES-256-GCM', 'AES-128-GCM')
+                    AND av.name IN ('AES-128-GCM')
     LOOP
         SELECT COUNT(*) INTO key_refs
         FROM keys k
